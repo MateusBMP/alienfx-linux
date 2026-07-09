@@ -282,6 +282,59 @@ int main(int argc, char** argv) {
         });
     });
 
+    // setpower dev light r g b r2 g2 b2
+    auto* cmd_setpower = app.add_subcommand(
+        "setpower", "dev light r g b r2 g2 b2 - set power button colors");
+    int sp_dev = 0, sp_light = 0, sp_r1 = 0, sp_g1 = 0, sp_b1 = 0;
+    int sp_r2 = 0, sp_g2 = 0, sp_b2 = 0;
+    cmd_setpower->add_option("dev", sp_dev)
+        ->required()
+        ->check(CLI::NonNegativeNumber);
+    cmd_setpower->add_option("light", sp_light)
+        ->required()
+        ->check(CLI::Range(0, 255));
+    cmd_setpower->add_option("r1", sp_r1)
+        ->required()
+        ->check(CLI::Range(0, 255));
+    cmd_setpower->add_option("g1", sp_g1)
+        ->required()
+        ->check(CLI::Range(0, 255));
+    cmd_setpower->add_option("b1", sp_b1)
+        ->required()
+        ->check(CLI::Range(0, 255));
+    cmd_setpower->add_option("r2", sp_r2)
+        ->required()
+        ->check(CLI::Range(0, 255));
+    cmd_setpower->add_option("g2", sp_g2)
+        ->required()
+        ->check(CLI::Range(0, 255));
+    cmd_setpower->add_option("b2", sp_b2)
+        ->required()
+        ->check(CLI::Range(0, 255));
+    cmd_setpower->callback([&]() {
+        ensureInit();
+        repeatCall([&]() {
+            if ((size_t)sp_dev >= afx_map.fxdevs.size())
+                throw CLI::ValidationError("dev", "Device index out of range");
+            AlienFX_SDK::Afx_lightblock act{
+                .index = (uint8_t)sp_light,
+                .act = {{.type = AlienFX_SDK::AlienFX_A_Power,
+                         .time = 3,
+                         .tempo = 0x64,
+                         .r = (uint8_t)sp_r1,
+                         .g = (uint8_t)sp_g1,
+                         .b = (uint8_t)sp_b1},
+                        {.type = AlienFX_SDK::AlienFX_A_Power,
+                         .time = 3,
+                         .tempo = 0x64,
+                         .r = (uint8_t)sp_r2,
+                         .g = (uint8_t)sp_g2,
+                         .b = (uint8_t)sp_b2}}};
+            afx_map.fxdevs[(size_t)sp_dev].dev->SetPowerAction(&act);
+            Update();
+        });
+    });
+
     // setzoneaction zone (action r g b)+
     auto* cmd_setzoneact =
         app.add_subcommand("setzoneaction",
