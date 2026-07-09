@@ -1,4 +1,5 @@
 #include <CLI/CLI.hpp>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <format>
@@ -6,8 +7,10 @@
 #include <loguru.hpp>
 #include <map>
 #include <string>
+#include <thread>
 #include <vector>
 
+#include "AlienFX_SDK.h"
 #include "AlienFan-SDK.h"
 #include "const.h"
 
@@ -145,6 +148,23 @@ int main(int argc, char** argv) {
     app.add_option("--tempo", sleepy, "Tempo for actions")->default_val(5);
     app.add_option("--length", longer, "Length for actions")->default_val(5);
 
+    int repeatCount = 1;
+    int delayMs = 0;
+    app.add_option("-r,--repeat", repeatCount, "Repeat count (0 = infinite)")
+        ->default_val(1)
+        ->check(CLI::NonNegativeNumber);
+    app.add_option("-d,--delay", delayMs, "Delay between repeats (ms)")
+        ->default_val(0)
+        ->check(CLI::NonNegativeNumber);
+
+    auto repeatCall = [&](auto&& fn) {
+        for (int i = 0; repeatCount == 0 || i < repeatCount; i++) {
+            fn();
+            if (delayMs > 0 && (repeatCount == 0 || i + 1 < repeatCount))
+                std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+        }
+    };
+
     // setall r g b
     auto* cmd_setall = app.add_subcommand("setall", "r g b - set all lights");
     int r = 0, g = 0, b = 0;
@@ -153,20 +173,22 @@ int main(int argc, char** argv) {
     cmd_setall->add_option("b", b)->required()->check(CLI::Range(0, 255));
     cmd_setall->callback([&]() {
         ensureInit();
-        auto act =
-            MakeColorAction(r, g, b, AlienFX_SDK::Action::AlienFX_A_Color);
+        repeatCall([&]() {
+            auto act =
+                MakeColorAction(r, g, b, AlienFX_SDK::Action::AlienFX_A_Color);
 
-        for (auto& dev : afx_map.fxdevs) {
-            if (!dev.dev || !dev.present) continue;
-            vector<uint8_t> lights;
-            for (auto& l : dev.lights) {
-                if (!(l.flags & ALIENFX_FLAG_POWER)) {
-                    lights.push_back((uint8_t)l.lightid);
+            for (auto& dev : afx_map.fxdevs) {
+                if (!dev.dev || !dev.present) continue;
+                vector<uint8_t> lights;
+                for (auto& l : dev.lights) {
+                    if (!(l.flags & ALIENFX_FLAG_POWER)) {
+                        lights.push_back((uint8_t)l.lightid);
+                    }
                 }
+                dev.dev->SetMultiColor(&lights, act);
             }
-            dev.dev->SetMultiColor(&lights, act);
-        }
-        Update();
+            Update();
+        });
     });
 
     // setone dev light r g b
@@ -185,18 +207,20 @@ int main(int argc, char** argv) {
     cmd_setone->add_option("b", b2)->required()->check(CLI::Range(0, 255));
     cmd_setone->callback([&]() {
         ensureInit();
-        if ((size_t)devIndex >= afx_map.fxdevs.size())
-            throw CLI::ValidationError("dev", "Device index out of range");
+        repeatCall([&]() {
+            if ((size_t)devIndex >= afx_map.fxdevs.size())
+                throw CLI::ValidationError("dev", "Device index out of range");
 
-        auto& dev = afx_map.fxdevs[(size_t)devIndex];
-        if (!dev.dev) throw std::runtime_error("Device not initialized");
+            auto& dev = afx_map.fxdevs[(size_t)devIndex];
+            if (!dev.dev) throw std::runtime_error("Device not initialized");
 
-        AlienFX_SDK::Afx_lightblock block{
-            (uint8_t)lightId,
-            {MakeColorAction(r2, g2, b2,
-                             AlienFX_SDK::Action::AlienFX_A_Color)}};
-        dev.dev->SetAction(&block);
-        dev.dev->UpdateColors();
+            AlienFX_SDK::Afx_lightblock block{
+                (uint8_t)lightId,
+                {MakeColorAction(r2, g2, b2,
+                                 AlienFX_SDK::Action::AlienFX_A_Color)}};
+            dev.dev->SetAction(&block);
+            dev.dev->UpdateColors();
+        });
     });
 
     // setzone zone r g b
@@ -210,24 +234,26 @@ int main(int argc, char** argv) {
     cmd_setzone->add_option("b", zb)->required()->check(CLI::Range(0, 255));
     cmd_setzone->callback([&]() {
         ensureInit();
-        unsigned zoneCode = GetZoneCodeFromString(zone);
-        auto* grp = afx_map.GetGroupById(zoneCode);
-        if (!grp) {
-            LOG_F(ERROR, "Zone/group not found: %s", zone.c_str());
-            return;
-        }
-
-        auto act =
-            MakeColorAction(zr, zg, zb, AlienFX_SDK::Action::AlienFX_A_Color);
-        for (auto& dev : afx_map.fxdevs) {
-            if (!dev.dev || !dev.present) continue;
-            vector<unsigned char> lights;
-            for (auto& gl : grp->lights) {
-                if (gl.did == dev.pid) lights.push_back((uint8_t)gl.lid);
+        repeatCall([&]() {
+            unsigned zoneCode = GetZoneCodeFromString(zone);
+            auto* grp = afx_map.GetGroupById(zoneCode);
+            if (!grp) {
+                LOG_F(ERROR, "Zone/group not found: %s", zone.c_str());
+                return;
             }
-            dev.dev->SetMultiColor(&lights, act);
-        }
-        Update();
+
+            auto act = MakeColorAction(zr, zg, zb,
+                                       AlienFX_SDK::Action::AlienFX_A_Color);
+            for (auto& dev : afx_map.fxdevs) {
+                if (!dev.dev || !dev.present) continue;
+                vector<unsigned char> lights;
+                for (auto& gl : grp->lights) {
+                    if (gl.did == dev.pid) lights.push_back((uint8_t)gl.lid);
+                }
+                dev.dev->SetMultiColor(&lights, act);
+            }
+            Update();
+        });
     });
 
     // setaction dev light (action r g b)+
@@ -245,13 +271,15 @@ int main(int argc, char** argv) {
     cmd_setaction->add_option("actions", sa_tokens)->required()->expected(-1);
     cmd_setaction->callback([&]() {
         ensureInit();
-        if ((size_t)sa_dev >= afx_map.fxdevs.size())
-            throw CLI::ValidationError("dev", "Device index out of range");
+        repeatCall([&]() {
+            if ((size_t)sa_dev >= afx_map.fxdevs.size())
+                throw CLI::ValidationError("dev", "Device index out of range");
 
-        auto actions = ParseActionList(sa_tokens);
-        AlienFX_SDK::Afx_lightblock block{(uint8_t)sa_light, actions};
-        afx_map.fxdevs[(size_t)sa_dev].dev->SetAction(&block);
-        Update();
+            auto actions = ParseActionList(sa_tokens);
+            AlienFX_SDK::Afx_lightblock block{(uint8_t)sa_light, actions};
+            afx_map.fxdevs[(size_t)sa_dev].dev->SetAction(&block);
+            Update();
+        });
     });
 
     // setzoneaction zone (action r g b)+
@@ -265,24 +293,26 @@ int main(int argc, char** argv) {
     cmd_setzoneact->add_option("actions", sza_tokens)->required()->expected(-1);
     cmd_setzoneact->callback([&]() {
         ensureInit();
-        unsigned zoneCode = GetZoneCodeFromString(sza_zone);
-        auto* grp = afx_map.GetGroupById(zoneCode);
-        // if (!grp) throw std::runtime_error("Zone/group not found");
-        if (!grp) {
-            LOG_F(ERROR, "Zone/group not found: %s", sza_zone.c_str());
-            std::exit(1);
-        }
+        repeatCall([&]() {
+            unsigned zoneCode = GetZoneCodeFromString(sza_zone);
+            auto* grp = afx_map.GetGroupById(zoneCode);
+            // if (!grp) throw std::runtime_error("Zone/group not found");
+            if (!grp) {
+                LOG_F(ERROR, "Zone/group not found: %s", sza_zone.c_str());
+                std::exit(1);
+            }
 
-        auto actions = ParseActionList(sza_tokens);
-        AlienFX_SDK::Afx_lightblock block{0, actions};
+            auto actions = ParseActionList(sza_tokens);
+            AlienFX_SDK::Afx_lightblock block{0, actions};
 
-        for (auto& gl : grp->lights) {
-            auto* dev = afx_map.GetDeviceById(gl.did);
-            if (!dev || !dev->dev) continue;
-            block.index = (uint8_t)gl.lid;
-            dev->dev->SetAction(&block);
-        }
-        Update();
+            for (auto& gl : grp->lights) {
+                auto* dev = afx_map.GetDeviceById(gl.did);
+                if (!dev || !dev->dev) continue;
+                block.index = (uint8_t)gl.lid;
+                dev->dev->SetAction(&block);
+            }
+            Update();
+        });
     });
 
     // setdim [dev] br  (support both: "setdim br" and "setdim dev br")
@@ -292,23 +322,26 @@ int main(int argc, char** argv) {
     cmd_setdim->add_option("args", dim_args)->required()->expected(1, 2);
     cmd_setdim->callback([&]() {
         ensureInit();
-        int br = 0;
-        if (dim_args.size() == 1) {
-            br = dim_args[0];
-            // all devices
-            for (auto& dev : afx_map.fxdevs) {
+        repeatCall([&]() {
+            int br = 0;
+            if (dim_args.size() == 1) {
+                br = dim_args[0];
+                // all devices
+                for (auto& dev : afx_map.fxdevs) {
+                    dev.brightness = (uint8_t)br;
+                    afx_map.SetDeviceBrightness(&dev, globalBright, false);
+                }
+            } else {
+                int d = dim_args[0];
+                br = dim_args[1];
+                if (d < 0 || (size_t)d >= afx_map.fxdevs.size())
+                    throw CLI::ValidationError("dev",
+                                               "Device index out of range");
+                auto& dev = afx_map.fxdevs[(size_t)d];
                 dev.brightness = (uint8_t)br;
                 afx_map.SetDeviceBrightness(&dev, globalBright, false);
             }
-        } else {
-            int d = dim_args[0];
-            br = dim_args[1];
-            if (d < 0 || (size_t)d >= afx_map.fxdevs.size())
-                throw CLI::ValidationError("dev", "Device index out of range");
-            auto& dev = afx_map.fxdevs[(size_t)d];
-            dev.brightness = (uint8_t)br;
-            afx_map.SetDeviceBrightness(&dev, globalBright, false);
-        }
+        });
     });
 
     // setglobal dev type mode [r g b [r g b]]
@@ -318,17 +351,19 @@ int main(int argc, char** argv) {
     cmd_setglobal->add_option("args", gargs)->required()->expected(3, 9);
     cmd_setglobal->callback([&]() {
         ensureInit();
-        int dev = gargs[0];
-        if (dev < 0 || (size_t)dev >= afx_map.fxdevs.size())
-            throw CLI::ValidationError("dev", "Device index out of range");
+        repeatCall([&]() {
+            int dev = gargs[0];
+            if (dev < 0 || (size_t)dev >= afx_map.fxdevs.size())
+                throw CLI::ValidationError("dev", "Device index out of range");
 
-        uint8_t cmode = gargs.size() < 6 ? 3 : (gargs.size() < 9 ? 1 : 2);
-        while (gargs.size() < 9) gargs.push_back(0);
+            uint8_t cmode = gargs.size() < 6 ? 3 : (gargs.size() < 9 ? 1 : 2);
+            while (gargs.size() < 9) gargs.push_back(0);
 
-        afx_map.fxdevs[(size_t)dev].dev->SetGlobalEffects(
-            (uint8_t)gargs[1], (uint8_t)gargs[2], cmode, sleepy,
-            {(uint8_t)gargs[3], (uint8_t)gargs[4], (uint8_t)gargs[5]},
-            {(uint8_t)gargs[6], (uint8_t)gargs[7], (uint8_t)gargs[8]});
+            afx_map.fxdevs[(size_t)dev].dev->SetGlobalEffects(
+                (uint8_t)gargs[1], (uint8_t)gargs[2], cmode, sleepy,
+                {(uint8_t)gargs[3], (uint8_t)gargs[4], (uint8_t)gargs[5]},
+                {(uint8_t)gargs[6], (uint8_t)gargs[7], (uint8_t)gargs[8]});
+        });
     });
 
     // status
@@ -336,31 +371,34 @@ int main(int argc, char** argv) {
         app.add_subcommand("status", "Show devices, lights and zones");
     cmd_status->callback([&]() {
         ensureInit();
-        for (auto it = afx_map.fxdevs.begin(); it < afx_map.fxdevs.end();
-             it++) {
-            cout << "Device #" << (it - afx_map.fxdevs.begin()) << " - "
-                 << it->name << ", VID#0x" << std::hex << it->vid << std::dec
-                 << ", PID#0x" << std::hex << it->pid << std::dec << ", APIv"
-                 << (int)it->version << ", " << it->lights.size() << " lights"
-                 << (it->present ? "" : " (inactive)") << "\n";
-            for (const auto& l : it->lights) {
-                cout << "  Light ID#" << (int)l.lightid << " - " << l.name
-                     << ((l.flags & ALIENFX_FLAG_POWER) ? " (Power button)"
-                                                        : "")
-                     << ((l.flags & ALIENFX_FLAG_INDICATOR) ? " (Indicator)"
+        repeatCall([&]() {
+            for (auto it = afx_map.fxdevs.begin(); it < afx_map.fxdevs.end();
+                 it++) {
+                cout << "Device #" << (it - afx_map.fxdevs.begin()) << " - "
+                     << it->name << ", VID#0x" << std::hex << it->vid
+                     << std::dec << ", PID#0x" << std::hex << it->pid
+                     << std::dec << ", APIv" << (int)it->version << ", "
+                     << it->lights.size() << " lights"
+                     << (it->present ? "" : " (inactive)") << "\n";
+                for (const auto& l : it->lights) {
+                    cout << "  Light ID#" << (int)l.lightid << " - " << l.name
+                         << ((l.flags & ALIENFX_FLAG_POWER) ? " (Power button)"
                                                             : "")
-                     << "\n";
+                         << ((l.flags & ALIENFX_FLAG_INDICATOR) ? " (Indicator)"
+                                                                : "")
+                         << "\n";
+                }
             }
-        }
 
-        if (!afx_map.GetGroups()->empty()) {
-            cout << afx_map.GetGroups()->size() << " zones:\n";
-            for (size_t i = 0; i < afx_map.GetGroups()->size(); i++) {
-                const auto& g = afx_map.GetGroups()->at(i);
-                cout << "  Zone #" << (g.gid) << " (" << g.lights.size()
-                     << " lights) - " << g.name << "\n";
+            if (!afx_map.GetGroups()->empty()) {
+                cout << afx_map.GetGroups()->size() << " zones:\n";
+                for (size_t i = 0; i < afx_map.GetGroups()->size(); i++) {
+                    const auto& g = afx_map.GetGroups()->at(i);
+                    cout << "  Zone #" << (g.gid) << " (" << g.lights.size()
+                         << " lights) - " << g.name << "\n";
+                }
             }
-        }
+        });
     });
 
     // probe
@@ -587,16 +625,21 @@ int main(int argc, char** argv) {
     auto* cmd_getpp =
         app.add_subcommand("getpowerprofile", "Get current power profile");
     cmd_getpp->callback([&]() {
-        fan.Probe();
-        cout << "Current power profile: " << fan.GetPowerProfile().name << "\n";
+        repeatCall([&]() {
+            fan.Probe();
+            cout << "Current power profile: " << fan.GetPowerProfile().name
+                 << "\n";
+        });
     });
 
     auto* cmd_supported =
         app.add_subcommand("supportedprofiles", "Get supported power profiles");
     cmd_supported->callback([&]() {
-        fan.Probe();
-        cout << "Supported power profiles:\n";
-        for (const auto& p : fan.profiles) cout << "  " << p.name << "\n";
+        repeatCall([&]() {
+            fan.Probe();
+            cout << "Supported power profiles:\n";
+            for (const auto& p : fan.profiles) cout << "  " << p.name << "\n";
+        });
     });
 
     auto* cmd_setpp = app.add_subcommand("setpowerprofile",
@@ -604,25 +647,44 @@ int main(int argc, char** argv) {
     string profile;
     cmd_setpp->add_option("profile", profile)->required();
     cmd_setpp->callback([&]() {
-        fan.Probe();
-        std::map<std::string, AlienFan_SDK::ALIENFAN_PROFILE> strToProfile = {
-            {"custom", AlienFan_SDK::CUSTOM},
-            {"balanced", AlienFan_SDK::BALANCED},
-            {"quiet", AlienFan_SDK::QUIET},
-            {"balanced-performance", AlienFan_SDK::BALANCED_PERFORMANCE},
-            {"performance", AlienFan_SDK::PERFORMANCE},
-            {"cool", AlienFan_SDK::COOL},
-            {"low-power", AlienFan_SDK::LOW_POWER},
-        };
+        repeatCall([&]() {
+            fan.Probe();
+            std::map<std::string, AlienFan_SDK::ALIENFAN_PROFILE> strToProfile =
+                {
+                    {"custom", AlienFan_SDK::CUSTOM},
+                    {"balanced", AlienFan_SDK::BALANCED},
+                    {"quiet", AlienFan_SDK::QUIET},
+                    {"balanced-performance",
+                     AlienFan_SDK::BALANCED_PERFORMANCE},
+                    {"performance", AlienFan_SDK::PERFORMANCE},
+                    {"cool", AlienFan_SDK::COOL},
+                    {"low-power", AlienFan_SDK::LOW_POWER},
+                };
 
-        auto it = strToProfile.find(profile);
-        if (it == strToProfile.end())
-            throw CLI::ValidationError("profile", "Unknown profile");
+            auto it = strToProfile.find(profile);
+            if (it == strToProfile.end())
+                throw CLI::ValidationError("profile", "Unknown profile");
 
-        if (fan.SetPowerProfile(it->second)) {
-            cout << "Power profile set to " << profile << "\n";
-        } else {
-            cout << "Failed to set power profile to " << profile << "\n";
+            if (fan.SetPowerProfile(it->second)) {
+                cout << "Power profile set to " << profile << "\n";
+            } else {
+                cout << "Failed to set power profile to " << profile << "\n";
+            }
+        });
+    });
+
+    // reset
+    auto* cmd_reset =
+        app.add_subcommand("reset", "Reset device (if supported)");
+    cmd_reset->callback([&]() {
+        ensureInit();
+        uint8_t resetCommand[]{0x2, 0x3, 0xff};
+        for (auto& d : afx_map.fxdevs) {
+            if (d.present && d.version == AlienFX_SDK::API_V4) {
+                bool ok = d.dev->PrepareAndSend(resetCommand);
+                cout << "Reset " << d.name << ": "
+                     << (ok ? "successful" : "failed") << "\n";
+            }
         }
     });
 
