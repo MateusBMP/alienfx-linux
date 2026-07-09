@@ -101,7 +101,7 @@ bool Functions::PrepareAndSend(const uint8_t* command,
 
 #ifdef DEBUG
     std::ostringstream oss;
-    oss << "Sending hid packet (" << length << " bytes): ";
+    oss << "Sending hid packet (" << length << " uint8_ts): ";
 
     for (int i = 0; i < length; ++i) {
         oss << std::hex << std::setw(2) << std::setfill('0')
@@ -431,9 +431,25 @@ bool Functions::SetMultiColor(vector<uint8_t>* lights, Afx_action c) {
             val = PrepareAndSend(COMMV5_loop);
             break;
         case API_V4: {
-            mods = {{3, {c.r, c.g, c.b, 0, (std::uint8_t)lights->size()}},
-                    {8, *lights}};
-            val = PrepareAndSend(COMMV4_setOneColor, &mods);
+            // ToDo: Divide command for more, then 34-8 (26) lights!
+            // mods = { { 3, {c.r, c.g, c.b, 0, (uint8_t)lights->size()} }, {8,
+            // *lights} };
+            uint8_t pos = 8;
+            for (auto i = lights->begin(); i != lights->end(); i++) {
+                if (pos > 33) {
+                    mods.push_back({3, {c.r, c.g, c.b, 0, 26}});
+                    val = PrepareAndSend(COMMV4_setOneColor, &mods);
+                    mods.clear();
+                    pos = 8;
+                    UpdateColors();
+                    Reset();
+                }
+                mods.push_back({pos++, {*i}});
+            }
+            if (pos > 8) {
+                mods.push_back({3, {c.r, c.g, c.b, 0, (uint8_t)(pos - 8)}});
+                val = PrepareAndSend(COMMV4_setOneColor, &mods);
+            }
         } break;
         case API_V3:
         case API_V2:
@@ -812,23 +828,34 @@ bool Functions::SetBrightness(std::uint8_t brightness, std::uint8_t gbr,
     switch (version) {
         case API_V8:
             PrepareAndSend(COMMV8_setBrightness, {{2, {bright}}});
-            break;
+            return true;
         case API_V5:
             Reset();
             PrepareAndSend(COMMV5_turnOnSet, {{4, {bright}}});
-            break;
+            return true;
         case API_V4: {
             int pos = 6;
-            vector<Afx_icommand> mods{
-                {3,
-                 {(std::uint8_t)(0x64 - bright), 0,
-                  (std::uint8_t)mappings->size()}} /*, { 6, idlist}*/};
-            for (auto i = mappings->begin(); i < mappings->end(); i++)
-                if (!i->flags || power) {
-                    mods.push_back({pos++, {(std::uint8_t)i->lightid}});
+            vector<Afx_icommand>
+                mods;  // { { 3, { (uint8_t)(0x64 - bright), 0,
+                       // (uint8_t)mappings->size() } }/*, { 6, idlist}*/ };
+
+            for (auto i = mappings->begin(); i < mappings->end(); i++) {
+                if (pos > 33) {
+                    mods.push_back({3, {(uint8_t)(0x64 - bright), 0, 28}});
+                    PrepareAndSend(COMMV4_turnOn, &mods);
+                    mods.clear();
+                    pos = 6;
                 }
-            PrepareAndSend(COMMV4_turnOn, &mods);
-            break;
+                if (!i->flags || power) {
+                    mods.push_back({pos++, {(uint8_t)i->lightid}});
+                }
+            }
+            if (pos > 6) {
+                mods.push_back(
+                    {3, {(uint8_t)(0x64 - bright), 0, (uint8_t)(pos - 6)}});
+                PrepareAndSend(COMMV4_turnOn, &mods);
+            }
+            return true;
         }
         case API_V3:
         case API_V2:
