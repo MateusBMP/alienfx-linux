@@ -43,7 +43,7 @@ const uint8_t COMMV1_dim[]{3, 0x1c, 0x64, 0x1};
 const uint8_t v1OpCodes[]{3, 2, 1, 1, 1, 1, 1};
 
 // V4, common tron/desktop
-const uint8_t COMMV4_control[]{6, 0x03, 0x21, 0x00, 0x03, 0x00, 0xff};
+const uint8_t COMMV4_control[]{6, 0x03, 0x21, 0x00, 0x03, 0xff, 0xff};
 // [4] - control type (1..7), 1 - start new, 2 - finish and save, 3 - finish and
 // play, 4 - remove, 5 - play, 6 - set default, 7 - set startup [5-6] - control
 // ID 0xffff - common, 8 - startup, 61 - light
@@ -116,7 +116,7 @@ const uint8_t COMMV7_update[]{8,    0x40, 0x60, 0x07, 0x00,
 //[8] = 1 - update finish, [9] = 1 - update color (after set)
 const uint8_t COMMV7_status[]{5, 0x40, 0x03, 0x01, 0x00, 0x01};
 const uint8_t COMMV7_control[]{5,    0x40, 0x10, 0x0c,
-                               0x00, 0x01}; // , 0x64, 0x00, 0x2a, 0xaa, 0xff};
+                               0x00, 0x01};  // , 0x64, 0x00, 0x2a, 0xaa, 0xff};
 //[5] - effect mode, [6] - brightness, [7] - lightID, [8..10] - rgb1, [11..13] -
 // rgb2...
 static uint8_t v7OpCodes[]{1, 5, 3, 2, 4, 6, 1};
@@ -183,4 +183,4 @@ const uint8_t v8OpCodes[]{0x81, 0x82, 0x83, 0x87, 0x88, 0x84, 0x81};
 // 2,88 - [45,46,47] - RGB, [48] - Brightness (0..64), [49] - Tempo?, [4a] -
 // checksum 1,8c - [45,46,47] - RGB, [48,49,4a] - RGB2, [4b] - brightness,
 // [4c,4d] - tempo, [4e] - checksum
-} // namespace AlienFX_SDK
+}  // namespace AlienFX_SDK
