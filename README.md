@@ -35,8 +35,7 @@ Read more details about supported devices and models [here](https://github.com/T
 
 ### Supported device API versions:
 
-~~- ACPI-controlled lights - 3 lights, 8 bit/color (v0) - Aurora R6/R7 (using this API require AlienFan-SDK library from [AlienFX-Tools](https://github.com/T-Troll/alienfx-tools) project).~~ Not Planned
-
+- ~~ACPI-controlled lights - 3 lights, 8 bit/color (v0) - Aurora R6/R7 (using this API require AlienFan-SDK library from [AlienFX-Tools](https://github.com/T-Troll/alienfx-tools) project).~~ Not Planned
 - 9 bytes 8 bit/color, reportID 2 control (v1) - Ancient notebooks - deprecated and removed.
 - 9 bytes 4 bit/color, reportID 2 control (v2) - Older notebooks (like m14/17x, 13R1/R2)
 - 12 bytes 8 bit/color, reportID 2 control (v3) - Old notebooks (like 15R5)
@@ -72,19 +71,118 @@ Some notebooks can have 2 devices - APIv4 (for logo, power button, etc) and APIv
 ```bash
 mkdir build/
 cd build/
-cmake .. -G Ninja -DALIENFX_BUILD_CLI=ON -DALIENFX_BUILD_EXAMPLE=ON
+cmake .. -G Ninja -DALIENFX_BUILD_CLI=ON -DALIENFX_BUILD_EXAMPLE=ON #OPTIONAL -DCMAKE_BUILD_TYPE=Debug
 ninja
 ```
 
 It would build 3 executables:
 
 - `AlienFX-SDK` - static library with AlienFX SDK
-- `Example-App` - sample application
 - `alienfx-cli` - command line tool for testing and configuring lights
+- `Example-App` - sample application
+
+### Help Menu
+
+```bash
+AlienFX CLI v1.2.0
+Control all of your Alienware device from the comfort of your terminal
+
+
+alienfx_cli [OPTIONS] SUBCOMMAND
+
+
+OPTIONS:
+  -h,     --help              Print this help message and exit
+  -v                          Display program version information and exit
+          --brightness UINT [255]
+                              Global brightness 0-255
+          --tempo UINT [5]    Tempo for actions
+          --length UINT [5]   Length for actions
+  -r,     --repeat INT:NONNEGATIVE [1]
+                              Repeat count (0 = infinite)
+  -d,     --delay INT:NONNEGATIVE [0]
+                              Delay between repeats (ms)
+  -s,     --save              Save to hardware (persist across reboots)
+
+SUBCOMMANDS:
+  setall                      r g b - set all lights
+  setone                      dev light r g b - set one light
+  setzone                     zone r g b - set zone lights
+  setaction                   dev light action r g b [action r g b] - set light and enable
+                              action
+  setpower                    dev light r g b r2 g2 b2 - set power button colors
+  setzoneaction               zone action r g b [action r g b] - set all zone lights and enable
+                              action
+  setdim                      [dev] br - set brightness
+  setglobal                   dev type mode [r g b [r g b]]
+  status                      Show devices, lights and zones
+  probe                       Probe lights and set names (interactive)
+  createlightzone             Interactively create a light zone/group
+  getpowerprofile             Get current power profile
+  supportedprofiles           Get supported power profiles
+  setpowerprofile             Set power profile (requires root)
+  reset                       Reset device (if supported)
+```
+### UPDATES
+
+#### UPDATE (#1)
+
+For now if u want to configure any device you have to run `HOME=/home/username sudo ./alienfx_cli probe` And configure + probe all ur device (this time it would save it to config files
+
+Once done u can see ur devices by running `./alienfx_cli status` which would output
+
+````
+Device #0 - Alienware AW-ELC, VID#6268, PID#1361, APIv4, 4 lights
+  Light ID#0 - Left
+  Light ID#1 - Middle Left
+  Light ID#2 - Middle Right
+  Light ID#3 - Right
+More devices in ur case
+````
+
+And then u can use any of the function of alienfx-cli
+Example: To set all lights to red i would do `./alienfx_cli setall 255 0 0` and every light would be red
+
+
+Currently all device in windows version are supported (except some acpi device)
+
+
+#### UPDATE (#2)
+
+Added Create Zone command `createlightzone` its intractive
+
+Now u can create ur custom zone of any light type
+
+Example:
+
+ I wanna make WASD key change colour together i can create a zone and then directly change color of that zone
+
+```
+❮ ./alienfx_cli status
+2026-02-28 18:25:11.404 (   0.013s) [        CB3267C0]               main.cpp:42    INFO| 1 low-level devices found.
+Device #0 - Alienware AW-ELC, VID#0x187c, PID#0x551, APIv4, 4 lights
+  Light ID#0 - Left
+  Light ID#1 - Middle Left
+  Light ID#2 - Middle Right
+  Light ID#3 - Right
+5 zones:
+  Zone #1 (1 lights) - left
+  Zone #2 (1 lights) - middle_left
+  Zone #3 (1 lights) - middle_right
+  Zone #4 (1 lights) - right
+  Zone #5 (4 lights) - all
+```
+
+
+#### UPDATE (#3)
+
+- Added `setpower` for setting power button colors and `--save` for permanently applying the light effects
+- Added `reset` for supported device to reset the light chip.
 
 # Credits
 
 - [T-Troll](https://github.com/T-Troll) - for original sdk and resources
 - [StromyCoder](https://github.com/StormyCoder) - for testing in m18 r2
-- # [ZackSM](https://github.com/valtasar27) - for testing m18 r1
-    <small> bro wanted his name big </small>
+- [ZackSM](https://github.com/valtasar27) - for testing m18 r1
+
+All the other people for testing and feedback.
