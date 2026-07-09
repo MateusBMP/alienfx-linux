@@ -43,7 +43,11 @@ union Afx_colorcode  // Atomic color structure
         uint8_t b, g, r;
         uint8_t br;  // Brightness
     };
-    unsigned long ci;
+    unsigned long cf;
+    Afx_colorcode(unsigned long ci) : cf(ci) {}
+    Afx_colorcode(uint8_t b, uint8_t g, uint8_t r) : b(b), g(g), r(r) {}
+    Afx_colorcode(uint8_t b, uint8_t g, uint8_t r, uint8_t br)
+        : b(b), g(g), r(r), br(br) {}
 };
 
 struct Afx_icommand {
@@ -94,12 +98,12 @@ struct Afx_device {  // Single device data
         };
         unsigned long devID;
     };
-    Functions* dev = nullptr;               // device control object pointer
-    std::string name;                       // device name
-    int version = API_UNKNOWN;              // API version used for this device
-    Afx_colorcode white = {255, 255, 255};  // white balance
-    uint8_t brightness = 255;               // global device brightness
-    std::vector<Afx_light> lights;          // vector of lights defined
+    Functions* dev = nullptr;          // device control object pointer
+    std::string name;                  // device name
+    int version = API_UNKNOWN;         // API version used for this device
+    Afx_colorcode white = 0xffffffff;  // white balance
+    uint8_t brightness = 255;          // global device brightness
+    std::vector<Afx_light> lights;     // vector of lights defined
     bool arrived = false,
          present = false;  // for newly arrived and present devices
 };
@@ -151,8 +155,6 @@ class Functions {
 
     // Support function to send data to USB device
     bool PrepareAndSend(const uint8_t* command, vector<Afx_icommand> mods);
-    bool PrepareAndSend(const uint8_t* command,
-                        vector<Afx_icommand>* mods = NULL);
 
     // Add new light effect block for v8
     inline void AddV8DataBlock(uint8_t bPos, vector<Afx_icommand>* mods,
@@ -193,6 +195,10 @@ class Functions {
 
     // Functions(libusb_context *ctxx) : ctx(ctxx) {};
     ~Functions();
+
+    // Support function to send data to USB device
+    bool PrepareAndSend(const uint8_t* command,
+                        vector<Afx_icommand>* mods = NULL);
 
     // Initialize device
     // If vid is 0 or absent, first device found into the system will be used,

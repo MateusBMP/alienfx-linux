@@ -24,15 +24,16 @@ vector<Afx_icommand>* Functions::SetMaskAndColor(vector<Afx_icommand>* mods,
                                                  Afx_lightblock* act,
                                                  bool needInverse,
                                                  unsigned long index) {
-    Afx_colorcode c;
-    c.ci = index ? index : needInverse ? ~((1 << act->index)) : 1 << act->index;
+    Afx_colorcode c = index         ? index
+                      : needInverse ? ~((1 << act->index))
+                                    : 1 << act->index;
     if (version < API_V4) {
         // index mask generation
         *mods = {{1, {v1OpCodes[act->act.front().type], chain, c.r, c.g, c.b}}};
     }
-    Afx_action c1 = act->act.front(), c2 = {0};
+    Afx_action c1 = act->act.front(),
+               c2 = act->act.size() < 2 ? Afx_action({0}) : act->act.back();
     uint8_t tempo = act->act.front().tempo;
-    if (act->act.size() >= 2) c2 = act->act.back();
     switch (version) {
         case API_V3:
             mods->push_back({6, {c1.r, c1.g, c1.b, c2.r, c2.g, c2.b}});
@@ -45,33 +46,38 @@ vector<Afx_icommand>* Functions::SetMaskAndColor(vector<Afx_icommand>* mods,
                   (uint8_t)((c2.g & 0xf0) | ((c2.b & 0xf0) >> 4))}});
             break;
         case API_V6: {  // case API_V9: {
-            vector<uint8_t> command{0x51,           v6OpCodes[c1.type],
-                                    0xd0,           v6TCodes[c1.type],
-                                    (uint8_t)index, c1.r,
-                                    c1.g,           c1.b};
+            *mods = {{9, {(uint8_t)index, c1.r, c1.g, c1.b}}};
             uint8_t mask = (uint8_t)(c1.r ^ c1.g ^ c1.b ^ index);
             switch (c1.type) {
                 case AlienFX_A_Color:
                     mask ^= 8;
-                    command.insert(command.end(), {bright, mask});
+                    mods->push_back({13, {bright, mask}});
                     break;
                 case AlienFX_A_Pulse:
                     mask ^= (uint8_t)(tempo ^ 1);
-                    command.insert(command.end(), {bright, tempo, mask});
+                    mods->insert(mods->end(), {{3, {0xb}},
+                                               {6, {0x88}},
+                                               {8, {2}},
+                                               {13, {bright, tempo}},
+                                               {15, {mask}}});
                     break;
                 case AlienFX_A_Breathing:
                     c2 = {0};
                 case AlienFX_A_Morph:
                     mask ^= (uint8_t)(c2.r ^ c2.g ^ c2.b ^ tempo ^ 4);
-                    command.insert(command.end(),
-                                   {c2.r, c2.g, c2.b, bright, 2, tempo, mask});
+                    mods->insert(mods->end(), {{3, {0xf}},
+                                               {6, {0x8c}},
+                                               {8, {1}},
+                                               {13, {c2.r, c2.g, c2.b}},
+                                               {16, {bright, 2, tempo, mask}}});
                     break;
             }
-            uint8_t lpos = 3, cpos = 5;
+            // uint8_t lpos = 3, cpos = 5;
             // if (version == API_V9) {
             //	lpos = 7; cpos = 0x41;
             // }
-            *mods = {{cpos, {command}}, {lpos, {(uint8_t)command.size(), 0}}};
+            // *mods = {{cpos, {command}}, {lpos, {(uint8_t)command.size(),
+            // 0}}};
         } break;
     }
     return mods;
@@ -488,7 +494,6 @@ bool Functions::SetMultiAction(vector<Afx_lightblock>* act, bool save) {
     if (!inSet) Reset();
     switch (version) {
         case API_V8: {
-            // std::uint8_t bPos = 5, cnt = 0;
             PrepareAndSend(COMMV8_readyToColor,
                            {{2, {(std::uint8_t)act->size()}}});
             auto nc = act->begin();
@@ -514,12 +519,16 @@ bool Functions::SetMultiAction(vector<Afx_lightblock>* act, bool save) {
             val = PrepareAndSend(COMMV5_loop);
         } break;
         default: {
+            // The rest doesn't support bulk light set
             for (auto nc = act->begin(); nc != act->end(); nc++)
                 val = SetAction(&(*nc));
         } break;
     }
 
-    return save ? SetPowerAction(act, save) : val;
+    if (save) {
+        SaveLightsState(act);
+    }
+    return val;
 }
 
 bool Functions::SetV4Action(Afx_lightblock* act) {
@@ -590,68 +599,49 @@ bool Functions::SetAction(Afx_lightblock* act) {
             PrepareAndSend(COMMV5_colorSet, &mods);
             return PrepareAndSend(COMMV5_loop);
         case API_V4:
-            switch (act->act.front().type) {
-                    // NOTE: This is for fast pace color change
-                case AlienFX_A_Color:  // it's a color, so set as color
-                    return PrepareAndSend(
-                        COMMV4_setOneColor,
-                        {{3,
-                          {act->act.front().r, act->act.front().g,
-                           act->act.front().b, 0, 1,
-                           (std::uint8_t)act->index}}});
-                case AlienFX_A_Power: {  // Set power
-                    vector<Afx_lightblock> t = {*act};
-                    return SetPowerAction(&t);
-                } break;
-                default:  // Set action
-                    return SetV4Action(act);
-            }
         case API_V3:
         case API_V2: {
-            bool res = false;
             // check types and call
             switch (act->act.front().type) {
-                case AlienFX_A_Power: {  // SetPowerAction for power!
-                    if (act->act.size() > 1) {
-                        vector<Afx_lightblock> t = {{*act}};
-                        return SetPowerAction(&t);
-                    }
+                case AlienFX_A_Color:  // it's a color, so set as color
+                    if (version == API_V4)
+                        return PrepareAndSend(
+                            COMMV4_setOneColor,
+                            {{3,
+                              {act->act.front().r, act->act.front().g,
+                               act->act.front().b, 0, 1,
+                               (uint8_t)act->index}}});
                     break;
-                }
-                case AlienFX_A_Color:
-                    break;
-                default:
-                    PrepareAndSend(
-                        COMMV1_setTempo,
-                        {{2,
-                          {(std::uint8_t)(((unsigned short)act->act.front()
-                                                   .tempo
-                                               << 3 &
-                                           0xff00) >>
-                                          8),
-                           (std::uint8_t)((unsigned short)act->act.front().tempo
+                case AlienFX_A_Power: {  // Set power button
+                    return SetPowerAction(act);
+                } break;
+                default:  // Set action
+                    if (version == API_V4)
+                        return SetV4Action(act);
+                    else {
+                        PrepareAndSend(
+                            COMMV1_setTempo,
+                            {{2,
+                              {(uint8_t)(((uint16_t)act->act.front().tempo
                                               << 3 &
-                                          0xff),
-                           (std::uint8_t)(((unsigned short)act->act.front().time
-                                               << 5 &
-                                           0xff00) >>
-                                          8),
-                           (std::uint8_t)((unsigned short)act->act.front().time
-                                              << 5 &
-                                          0xff)}}});
-                    PrepareAndSend(COMMV1_loop);
+                                          0xff00) >>
+                                         8),
+                               (uint8_t)((uint16_t)act->act.front().tempo << 3 &
+                                         0xff),
+                               (uint8_t)(((uint16_t)act->act.front().time << 5 &
+                                          0xff00) >>
+                                         8),
+                               (uint8_t)((uint16_t)act->act.front().time << 5 &
+                                         0xff)}}});
+                        PrepareAndSend(COMMV1_loop);
+                    }
             }
             for (auto ca = act->act.begin(); ca != act->act.end(); ca++) {
                 Afx_lightblock t = {act->index, {*ca}};
-                if (act->act.size() > 1)
-                    t.act.push_back(ca + 1 != act->act.end()
-                                        ? *(ca + 1)
-                                        : act->act.front());
                 LOG_S(INFO) << "SDK: Set light " << act->index;
                 PrepareAndSend(COMMV1_color, SetMaskAndColor(&mods, &t));
             }
-            // DebugPrint("SDK: Loop\n");
-            res = PrepareAndSend(COMMV1_loop);
+            bool res = PrepareAndSend(COMMV1_loop);
             chain++;
             return res;
         }
@@ -767,7 +757,7 @@ bool Functions::SetPowerAction(Afx_lightblock* act) {
 
             PrepareAndSend(COMMV4_control, {{4, {5}} /*, { 6, 0x61 }*/});
 #ifdef _DEBUG
-            if (!WaitForBusy()) DebugPrint("Power device busy timeout!\n");
+            if (!WaitForBusy()) LOG_S(ERROR) << "Power device busy timeout!";
 #else
             WaitForBusy();
 #endif
@@ -1256,7 +1246,7 @@ void Mappings::LoadMappings(const char* username) {
             d.devID = ((unsigned long)d.vid << 16) |
                       d.pid;  // consistent with LOWORD/HIWORD usage
             d.name = jd.value("name", std::string{});
-            d.white.ci = (unsigned long)jd.value("white", 0);
+            d.white.cf = (unsigned long)jd.value("white", 0);
             d.brightness = (std::uint8_t)jd.value("brightness", 0);
 
             d.present = false;
@@ -1341,7 +1331,7 @@ void Mappings::SaveMappings(const char* username) {
         jd["vid"] = d.vid;
         jd["pid"] = d.pid;
         jd["name"] = d.name;
-        jd["white"] = d.white.ci;
+        jd["white"] = d.white.cf;
         jd["brightness"] = d.brightness;
 
         jd["lights"] = json::array();
