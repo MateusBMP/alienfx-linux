@@ -133,6 +133,12 @@ int main(int argc, char** argv) {
         VERSION);
 
     CLI::App app{desciption, "alienfx_cli"};
+#ifndef NDEBUG
+    loguru::g_stderr_verbosity = loguru::Verbosity_ERROR;
+#else
+    loguru::g_stderr_verbosity = loguru::Verbosity_INFO;
+#endif
+    loguru::init(argc, argv);
     argv = app.ensure_utf8(argv);
     app.set_version_flag("-v", string("alienfx-cli v") + VERSION);
 
