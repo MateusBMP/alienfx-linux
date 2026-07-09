@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(
   alienfx_cli
   LANGUAGES CXX
-  VERSION 1.1.0)
+  VERSION 1.2.0)
 add_compile_definitions(VERSION="${PROJECT_VERSION}")
 
 include(FetchContent)
