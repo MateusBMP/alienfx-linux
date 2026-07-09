@@ -649,6 +649,23 @@ bool Functions::SetAction(Afx_lightblock* act) {
     return false;
 }
 
+// NOTE: For effects to be persistant over restart we have to set
+// the effect also as startup effect
+void Functions::SaveLightsStateToStartup(vector<Afx_lightblock>* act) {
+    UpdateColors();
+    switch (version) {
+        case API_V4: {
+            PrepareAndSend(COMMV4_control, {{4, {4, 0, 0x08}}});
+            PrepareAndSend(COMMV4_control, {{4, {1, 0, 0x08}}});
+            for (auto ca = act->begin(); ca != act->end(); ca++)
+                if (ca->act.front().type != AlienFX_A_Power)
+                    SetV4Action(&(*ca));
+            PrepareAndSend(COMMV4_control, {{4, {2, 0, 0x08}}});
+            PrepareAndSend(COMMV4_control, {{4, {7, 0, 0x08}}});
+        } break;
+    }
+}
+
 void Functions::SaveLightsState(vector<Afx_lightblock>* act) {
     UpdateColors();
     switch (version) {

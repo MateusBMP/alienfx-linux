@@ -244,6 +244,10 @@ class Functions {
     // act - vector of lights to set, including power button (if any)
     void SaveLightsState(vector<Afx_lightblock>* act);
 
+    // Save lights state as startup defaults (require where effects get reset on
+    // startup) act - vector of lights to set, including power button (if any)
+    void SaveLightsStateToStartup(vector<Afx_lightblock>* act);
+
     // Set action for Power button
     // act - pointer to light control block
     bool SetPowerAction(Afx_lightblock* act);
