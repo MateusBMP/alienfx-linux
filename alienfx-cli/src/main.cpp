@@ -158,7 +158,8 @@ int main(int argc, char** argv) {
         ->check(CLI::NonNegativeNumber);
 
     bool saveState = false;
-    app.add_flag("-s,--save", saveState, "Save to hardware (persist across reboots)");
+    app.add_flag("-s,--save", saveState,
+                 "Save to hardware (persist across reboots)");
 
     auto repeatCall = [&](auto&& fn) {
         for (int i = 0; repeatCount == 0 || i < repeatCount; i++) {
@@ -196,6 +197,7 @@ int main(int argc, char** argv) {
                             blocks.push_back({(uint8_t)l.lightid, {act}});
                     }
                     dev.dev->SaveLightsState(&blocks);
+                    dev.dev->SaveLightsStateToStartup(&blocks);
                 }
             }
             Update();
@@ -233,6 +235,7 @@ int main(int argc, char** argv) {
             if (saveState) {
                 vector<AlienFX_SDK::Afx_lightblock> blocks = {block};
                 dev.dev->SaveLightsState(&blocks);
+                dev.dev->SaveLightsStateToStartup(&blocks);
             }
             dev.dev->UpdateColors();
         });
@@ -273,6 +276,7 @@ int main(int argc, char** argv) {
                             blocks.push_back({(uint8_t)gl.lid, {act}});
                     }
                     dev.dev->SaveLightsState(&blocks);
+                    dev.dev->SaveLightsStateToStartup(&blocks);
                 }
             }
             Update();
@@ -304,6 +308,8 @@ int main(int argc, char** argv) {
             if (saveState) {
                 vector<AlienFX_SDK::Afx_lightblock> blocks = {block};
                 afx_map.fxdevs[(size_t)sa_dev].dev->SaveLightsState(&blocks);
+                afx_map.fxdevs[(size_t)sa_dev].dev->SaveLightsStateToStartup(
+                    &blocks);
             }
             Update();
         });
@@ -361,6 +367,8 @@ int main(int argc, char** argv) {
             if (saveState) {
                 vector<AlienFX_SDK::Afx_lightblock> blocks = {act};
                 afx_map.fxdevs[(size_t)sp_dev].dev->SaveLightsState(&blocks);
+                afx_map.fxdevs[(size_t)sp_dev].dev->SaveLightsStateToStartup(
+                    &blocks);
             }
             Update();
         });
@@ -396,16 +404,16 @@ int main(int argc, char** argv) {
                 dev->dev->SetAction(&block);
             }
             if (saveState) {
-                map<unsigned short,
-                    vector<AlienFX_SDK::Afx_lightblock>> devBlocks;
+                map<unsigned short, vector<AlienFX_SDK::Afx_lightblock>>
+                    devBlocks;
                 for (auto& gl : grp->lights) {
-                    devBlocks[gl.did].push_back(
-                        {(uint8_t)gl.lid, actions});
+                    devBlocks[gl.did].push_back({(uint8_t)gl.lid, actions});
                 }
                 for (auto& [did, blocks] : devBlocks) {
                     auto* dev = afx_map.GetDeviceById(did);
+                    if (dev && dev->dev) dev->dev->SaveLightsState(&blocks);
                     if (dev && dev->dev)
-                        dev->dev->SaveLightsState(&blocks);
+                        dev->dev->SaveLightsStateToStartup(&blocks);
                 }
             }
             Update();
