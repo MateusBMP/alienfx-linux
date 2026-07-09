@@ -659,153 +659,147 @@ bool Functions::SetAction(Afx_lightblock* act) {
     return false;
 }
 
-bool Functions::SetPowerAction(vector<Afx_lightblock>* act, bool save) {
-    Afx_lightblock* pwr = NULL;
+void Functions::SaveLightsState(vector<Afx_lightblock>* act) {
+    UpdateColors();
     switch (version) {
-        // ToDo - APIv8 profile save
         case API_V4: {
-            UpdateColors();
-            if (save) {
-                PrepareAndSend(COMMV4_control, {{4, {4, 0, 0x61}}});
-                PrepareAndSend(COMMV4_control, {{4, {1, 0, 0x61}}});
-                for (auto ca = act->begin(); ca != act->end(); ca++)
-                    if (ca->act.front().type != AlienFX_A_Power)
-                        SetV4Action(&(*ca));
-                PrepareAndSend(COMMV4_control, {{4, {2, 0, 0x61}}});
-                PrepareAndSend(COMMV4_control, {{4, {6, 0, 0x61}}});
-            } else {
-                pwr = &act->front();
-                // Now set power button....
-                for (uint8_t cid = 0x5b; cid < 0x61; cid++) {
-                    // Init query...
-                    PrepareAndSend(COMMV4_setPower, {{4, {4, 0, cid}}});
-                    PrepareAndSend(COMMV4_setPower, {{4, {1, 0, cid}}});
-                    // Now set color by type...
-                    Afx_lightblock tact{pwr->index};
-                    switch (cid) {
-                        case 0x5b:  // AC sleep
-                            tact.act.push_back(
-                                pwr->act
-                                    .front());  // afx_act{AlienFX_A_Power, 3,
-                                                // 0x64, pwr->act.front().r,
-                                                // pwr->act.front().g,
-                                                // pwr->act.front().b});
-                            tact.act.push_back(
-                                Afx_action{AlienFX_A_Power, 3, 0x64, 0, 0, 0});
-                            break;
-                        case 0x5c:  // AC power
-                            tact.act.push_back(
-                                pwr->act
-                                    .front());  // afx_act{AlienFX_A_Color, 0,
-                                                // 0, pwr->act.front().r,
-                                                // act[index].act.front().g,
-                                                // act[index].act.front().b});
-                            tact.act.front().type = AlienFX_A_Color;
-                            break;
-                        case 0x5d:  // Charge
-                            tact.act.push_back(
-                                pwr->act
-                                    .front());  // afx_act{AlienFX_A_Power, 3,
-                                                // 0x64,
-                                                // act[index].act.front().r,
-                                                // act[index].act.front().g,
-                                                // act[index].act.front().b});
-                            tact.act.push_back(
-                                pwr->act
-                                    .back());  // afx_act{AlienFX_A_Power, 3,
-                                               // 0x64, act[index].act.back().r,
-                                               // act[index].act.back().g,
-                                               // act[index].act.back().b});
-                            break;
-                        case 0x5e:  // Battery sleep
-                            tact.act.push_back(
-                                pwr->act
-                                    .back());  // afx_act{AlienFX_A_Power, 3,
-                                               // 0x64, act[index].act.back().r,
-                                               // act[index].act.back().g,
-                                               // act[index].act.back().b});
-                            tact.act.push_back(
-                                Afx_action{AlienFX_A_Power, 3, 0x64, 0, 0, 0});
-                            break;
-                        case 0x5f:  // Batt power
-                            tact.act.push_back(
-                                pwr->act
-                                    .back());  // afx_act{AlienFX_A_Color, 0, 0,
-                                               // act[index].act.back().r,
-                                               // act[index].act.back().g,
-                                               // act[index].act.back().b});
-                            tact.act.front().type = AlienFX_A_Color;
-                            break;
-                        case 0x60:  // Batt critical
-                            tact.act.push_back(
-                                pwr->act
-                                    .back());  // afx_act{AlienFX_A_Color, 0, 0,
-                                               // act[index].act.back().r,
-                                               // act[index].act.back().g,
-                                               // act[index].act.back().b});
-                            tact.act.front().type = AlienFX_A_Pulse;
-                    }
-                    SetV4Action(&tact);
-                    // And finish
-                    PrepareAndSend(COMMV4_setPower, {{4, {2, 0, cid}}});
-                }
-
-                PrepareAndSend(COMMV4_control, {{4, {5}} /*, { 6, 0x61 }*/});
-#ifdef DEBUG
-                if (!WaitForBusy())
-                    LOG_S(ERROR) << "Power device busy timeout!";
-#else
-                // WaitForBusy();
-#endif
-                // WaitForReady();
-            }
+            PrepareAndSend(COMMV4_control, {{4, {4, 0, 0x61}}});
+            PrepareAndSend(COMMV4_control, {{4, {1, 0, 0x61}}});
+            for (auto ca = act->begin(); ca != act->end(); ca++)
+                if (ca->act.front().type != AlienFX_A_Power)
+                    SetV4Action(&(*ca));
+            PrepareAndSend(COMMV4_control, {{4, {2, 0, 0x61}}});
+            PrepareAndSend(COMMV4_control, {{4, {6, 0, 0x61}}});
         } break;
         case API_V3:
         case API_V2: {
-            if (!inSet) Reset();
+            Afx_lightblock* pwr = NULL;
+            bool wasSave = false;
             for (auto ca = act->begin(); ca != act->end(); ca++)
-                if (ca->act.front().type != AlienFX_A_Power)
+                if (ca->act.front().type != AlienFX_A_Power) {
                     SavePowerBlock(1, &(*ca), false);
-                else
+                    wasSave = true;
+                } else
                     pwr = &(*ca);
-            if (pwr) {
-                if (act->size() > 1) {
-                    PrepareAndSend(COMMV1_save);
-                    Reset();
-                }
-                chain = 1;
-                if (save) {
-                    // 08 02 - AC standby
-                    Afx_lightblock tact = *pwr;
-                    tact.act.front().type = AlienFX_A_Morph;
-                    tact.act.back() = {AlienFX_A_Morph};
-                    SavePowerBlock(2, &tact, true, true, true);
-                    // 08 05 - AC power
-                    tact.act.front().type = AlienFX_A_Color;
-                    SavePowerBlock(5, &tact, true);
-                    // 08 06 - charge
-                    tact.act.back() = pwr->act.back();
-                    tact.act.front().type = tact.act.back().type =
-                        AlienFX_A_Morph;
-                    SavePowerBlock(6, &tact, true, true);
-                    // 08 07 - Battery standby
-                    tact.act.front() = pwr->act.back();
-                    tact.act.front().type = AlienFX_A_Morph;
-                    tact.act.back() = {AlienFX_A_Morph};
-                    SavePowerBlock(7, &tact, true, true, true);
-                    // 08 08 - battery
-                    tact.act.front().type = AlienFX_A_Color;
-                    SavePowerBlock(8, &tact, true);
-                    // 08 09 - battery critical
-                    tact.act.front().type = AlienFX_A_Pulse;
-                    SavePowerBlock(9, &tact, true);
-                }
-                SetColor(pwr->index, pwr->act.front());
-                UpdateColors();
-            } else {
+            if (wasSave) {
                 PrepareAndSend(COMMV1_save);
                 Reset();
             }
+            if (pwr) {
+                SetPowerAction(pwr);
+            }
+        } break;
+    }
+}
+
+bool Functions::SetPowerAction(Afx_lightblock* act) {
+    UpdateColors();
+    switch (version) {
+        // ToDo - APIv8 profile save
+        case API_V4: {
+            // Now set power button....
+            for (uint8_t cid = 0x5b; cid < 0x61; cid++) {
+                // Init query...
+                PrepareAndSend(COMMV4_setPower, {{4, {4, 0, cid}}});
+                PrepareAndSend(COMMV4_setPower, {{4, {1, 0, cid}}});
+                // Now set color by type...
+                Afx_lightblock tact = *act;
+                switch (cid) {
+                    case 0x5b:  // AC sleep
+                        tact.act.push_back(
+                            act->act.front());  // afx_act{AlienFX_A_Power, 3,
+                                                // 0x64, pwr->act.front().r,
+                                                // pwr->act.front().g,
+                                                // pwr->act.front().b});
+                        tact.act.push_back(
+                            Afx_action{AlienFX_A_Power, 3, 0x64, 0, 0, 0});
+                        break;
+                    case 0x5c:  // AC power
+                        tact.act.push_back(
+                            act->act.front());  // afx_act{AlienFX_A_Color, 0,
+                                                // 0, pwr->act.front().r,
+                                                // act[index].act.front().g,
+                                                // act[index].act.front().b});
+                        tact.act.front().type = AlienFX_A_Color;
+                        break;
+                    case 0x5d:  // Charge
+                        tact.act.push_back(
+                            act->act
+                                .front());  // afx_act{AlienFX_A_Power, 3, 0x64,
+                                            // act[index].act.front().r,
+                                            // act[index].act.front().g,
+                                            // act[index].act.front().b});
+                        tact.act.push_back(
+                            act->act.back());  // afx_act{AlienFX_A_Power, 3,
+                                               // 0x64, act[index].act.back().r,
+                                               // act[index].act.back().g,
+                                               // act[index].act.back().b});
+                        break;
+                    case 0x5e:  // Battery sleep
+                        tact.act.push_back(
+                            act->act.back());  // afx_act{AlienFX_A_Power, 3,
+                                               // 0x64, act[index].act.back().r,
+                                               // act[index].act.back().g,
+                                               // act[index].act.back().b});
+                        tact.act.push_back(
+                            Afx_action{AlienFX_A_Power, 3, 0x64, 0, 0, 0});
+                        break;
+                    case 0x5f:  // Batt power
+                        tact.act.push_back(
+                            act->act.back());  // afx_act{AlienFX_A_Color, 0, 0,
+                                               // act[index].act.back().r,
+                                               // act[index].act.back().g,
+                                               // act[index].act.back().b});
+                        tact.act.front().type = AlienFX_A_Color;
+                        break;
+                    case 0x60:  // Batt critical
+                        tact.act.push_back(
+                            act->act.back());  // afx_act{AlienFX_A_Color, 0, 0,
+                                               // act[index].act.back().r,
+                                               // act[index].act.back().g,
+                                               // act[index].act.back().b});
+                        tact.act.front().type = AlienFX_A_Pulse;
+                }
+                SetV4Action(&tact);
+                // And finish
+                PrepareAndSend(COMMV4_setPower, {{4, {2, 0, cid}}});
+            }
+
+            PrepareAndSend(COMMV4_control, {{4, {5}} /*, { 6, 0x61 }*/});
+#ifdef _DEBUG
+            if (!WaitForBusy()) DebugPrint("Power device busy timeout!\n");
+#else
+            WaitForBusy();
+#endif
+            WaitForReady();
+        } break;
+        case API_V3:
+        case API_V2: {
+            chain = 1;
+            Afx_lightblock tact = *act;
+            tact.act.front().type = AlienFX_A_Morph;
+            tact.act.back() = {AlienFX_A_Morph};
+            SavePowerBlock(2, &tact, true, true, true);
+            // 08 05 - AC power
+            tact.act.front().type = AlienFX_A_Color;
+            SavePowerBlock(5, &tact, true);
+            // 08 06 - charge
+            tact.act.back() = act->act.back();
+            tact.act.front().type = tact.act.back().type = AlienFX_A_Morph;
+            SavePowerBlock(6, &tact, true, true);
+            // 08 07 - Battery standby
+            tact.act.front() = act->act.back();
+            tact.act.front().type = AlienFX_A_Morph;
+            tact.act.back() = {AlienFX_A_Morph};
+            SavePowerBlock(7, &tact, true, true, true);
+            // 08 08 - battery
+            tact.act.front().type = AlienFX_A_Color;
+            SavePowerBlock(8, &tact, true);
+            // 08 09 - battery critical
+            tact.act.front().type = AlienFX_A_Pulse;
+            SavePowerBlock(9, &tact, true);
+            SetColor(act->index, act->act.front());
+            UpdateColors();
         } break;
     }
     return true;
