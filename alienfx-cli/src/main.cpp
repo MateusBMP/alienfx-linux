@@ -133,7 +133,7 @@ int main(int argc, char** argv) {
         VERSION);
 
     CLI::App app{desciption, "alienfx_cli"};
-#ifndef NDEBUG
+#ifndef DEBUG
     loguru::g_stderr_verbosity = loguru::Verbosity_ERROR;
 #else
     loguru::g_stderr_verbosity = loguru::Verbosity_INFO;

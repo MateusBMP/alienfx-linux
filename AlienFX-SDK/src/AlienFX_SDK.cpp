@@ -190,12 +190,6 @@ bool Functions::AlienFXProbeDevice(libusb_context* ctxx, unsigned short vidd,
     // NOTE: all lengths are +1 in windows than linux
     // Reason: ask hid devs?
     int checker = length + 1;
-#ifdef DEBUG
-    LOG_S(INFO) << "Probing device VID: 0x" << std::hex << std::setw(4)
-                << std::setfill('0') << vidd << ", PID: 0x" << std::setw(4)
-                << std::setfill('0') << pidd << ", Version: " << std::dec
-                << version << ", Length: " << std::dec << length;
-#endif
     switch (vidd) {
         case 0x0d62:  // Darfon
             version = API_V5;
@@ -773,7 +767,7 @@ bool Functions::SetPowerAction(Afx_lightblock* act) {
             }
 
             PrepareAndSend(COMMV4_control, {{4, {5}} /*, { 6, 0x61 }*/});
-#ifdef _DEBUG
+#ifdef DEBUG
             if (!WaitForBusy()) LOG_S(ERROR) << "Power device busy timeout!";
 #else
             WaitForBusy();
@@ -994,16 +988,15 @@ std::uint8_t Functions::IsDeviceReady() {
         case API_V5:
             return status != ALIENFX_V5_WAITUPDATE;
         case API_V4:
-            // #ifdef DEBUG
-            //         LOG_S(INFO) << "Status: " << std::hex << status;
-            //         status = status ? status != ALIENFX_V4_BUSY : 0xff;
-            //
-            //         if (status == 0xff)
-            //             LOG_S(ERROR) << "Device hang!";
-            //         return status;
-            // #else
+#ifdef DEBUG
+            LOG_S(INFO) << "Status: " << std::hex << status;
+            status = status ? status != ALIENFX_V4_BUSY : 0xff;
+
+            if (status == 0xff) LOG_S(ERROR) << "Device hang!";
+            return status;
+#else
             return status ? status != ALIENFX_V4_BUSY : 0xff;
-            // #endif
+#endif
         case API_V3:
         case API_V2:
             return status == ALIENFX_V2_READY ? 1 : Reset();

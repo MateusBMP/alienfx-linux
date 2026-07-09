@@ -56,6 +56,9 @@ file(GLOB_RECURSE SDK_SOURCES CONFIGURE_DEPENDS src/*.cpp)
 
 add_library(AlienFX_SDK STATIC ${SDK_SOURCES})
 
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_definitions(AlienFX_SDK PRIVATE DEBUG)
+endif()
 target_include_directories(AlienFX_SDK
                            PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 

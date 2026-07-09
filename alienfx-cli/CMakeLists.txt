@@ -16,6 +16,9 @@ FetchContent_MakeAvailable(CLI11)
 file(GLOB_RECURSE CLI_SOURCES CONFIGURE_DEPENDS src/*.cpp)
 add_executable(alienfx_cli ${CLI_SOURCES})
 
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_definitions(alienfx_cli PRIVATE DEBUG)
+endif()
 target_include_directories(alienfx_cli
                            PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(alienfx_cli PRIVATE AlienFX_SDK AlienFan_SDK CLI11::CLI11)
