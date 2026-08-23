@@ -6,6 +6,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <loguru.hpp>
 
 #include "alienfx_control.h"
@@ -19,6 +20,9 @@
 
 namespace AlienFX_SDK {
 using json = nlohmann::json;
+
+static_assert(std::size(reportIDList) > API_V8,
+              "reportIDList must cover every Afx_Version used as an index");
 
 vector<Afx_icommand>* Functions::SetMaskAndColor(vector<Afx_icommand>* mods,
                                                  Afx_lightblock* act,
@@ -227,14 +231,17 @@ bool Functions::AlienFXProbeDevice(libusb_context* ctxx, unsigned short vidd,
                 }
     }
 
-    // NOTE: Add +1 for device which dont have reportid as its nulled out in
-    // hidapi
-    if (reportIDList[version] == 0) {
-        length++;
-    }
     if (version == API_UNKNOWN) {
         // LOG_S(ERROR) << "Device not found";
         return false;
+    }
+    // NOTE: Add +1 for device which dont have reportid as its nulled out.
+    // The report-ID-0 byte is stripped by the transport before it reaches the
+    // wire -- hidapi's libusb backend does this in userspace, the kernel's
+    // usbhid driver does it for the hidraw backend -- so either way `length`
+    // must include the ID byte here to end up with the right wire length.
+    if (reportIDList[version] == 0) {
+        length++;
     }
     vid = vidd;
     pid = pidd;
