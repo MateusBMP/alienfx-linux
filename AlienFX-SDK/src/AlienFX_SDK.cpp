@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iterator>
 #include <loguru.hpp>
+#include <set>
 
 #include "alienfx_control.h"
 #include "hidapi.h"
@@ -23,6 +24,24 @@ using json = nlohmann::json;
 
 static_assert(std::size(reportIDList) > API_V8,
               "reportIDList must cover every Afx_Version used as an index");
+
+// The five VIDs AlienFXProbeDevice's version switch can possibly match:
+// Alienware, Darfon (RGB keyboards), Microchip (monitors), Primax (mice),
+// Chicony (external keyboards). Filtering enumeration to these is
+// behaviour-preserving -- no other VID can yield a version -- and strictly
+// safer: this process then never opens an unrelated HID device at all.
+static bool IsKnownVendor(unsigned short vid) {
+    switch (vid) {
+        case 0x187c:
+        case 0x0d62:
+        case 0x0424:
+        case 0x0461:
+        case 0x04f2:
+            return true;
+        default:
+            return false;
+    }
+}
 
 vector<Afx_icommand>* Functions::SetMaskAndColor(vector<Afx_icommand>* mods,
                                                  Afx_lightblock* act,
@@ -1094,9 +1113,23 @@ bool Mappings::AlienFXEnumDevices(void* acc) {
 
     // Enumerate all HID devices
     struct hid_device_info* devs = hid_enumerate(0x0, 0x0);
-    struct hid_device_info* cur_dev = devs;
 
-    while (cur_dev) {
+    // hid_enumerate() yields one entry per top-level collection, and a
+    // composite device's collections all share one path -- e.g. under the
+    // hidraw backend the Darfon keyboard's single /dev/hidrawN node shows up
+    // as four separate entries. Probe each unique path once: besides being
+    // wasteful, opening the same device repeatedly is exactly the pattern
+    // that let this code open a keyboard's own input interface before
+    // AlienFxUpdateDevice's dedupe-by-VID/PID even got a chance to close the
+    // extra handle. The vendor filter is the primary safety net: it stops
+    // this process from ever opening an unrelated HID device at all.
+    std::set<string> seenPaths;
+
+    for (struct hid_device_info* cur_dev = devs; cur_dev;
+        cur_dev = cur_dev->next) {
+        if (!cur_dev->path || !IsKnownVendor(cur_dev->vendor_id)) continue;
+        if (!seenPaths.insert(cur_dev->path).second) continue;
+
         dev = new Functions();
         if (dev->AlienFXProbeDevice(ctx, cur_dev->vendor_id,
                                     cur_dev->product_id, cur_dev->path)) {
@@ -1110,7 +1143,6 @@ bool Mappings::AlienFXEnumDevices(void* acc) {
             delete dev;
             dev = nullptr;
         }
-        cur_dev = cur_dev->next;
     }
 
     hid_free_enumeration(devs);
