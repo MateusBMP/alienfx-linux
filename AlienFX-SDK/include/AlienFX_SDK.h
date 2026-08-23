@@ -184,10 +184,13 @@ class Functions {
     union {
         struct {
             unsigned short pid, vid;  // Device IDs
-            char* path;               // Device path
         };
         unsigned long devID;
     };
+    // Device path. Owned copy: the hid_device_info this is built from is
+    // freed by hid_free_enumeration() right after enumeration, so a raw
+    // char* here would dangle for the rest of the process.
+    string path;
     int version = API_UNKNOWN;  // interface version, will stay at API_UNKNOWN
                                 // if not initialized
     uint8_t bright = 64;        // Last brightness set for device

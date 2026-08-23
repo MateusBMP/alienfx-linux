@@ -245,7 +245,7 @@ bool Functions::AlienFXProbeDevice(libusb_context* ctxx, unsigned short vidd,
     }
     vid = vidd;
     pid = pidd;
-    path = pathh;
+    path = pathh ? pathh : "";
     // NOTE: Open path should not hang kbd while testing it? else fallback
     if (pathh)
         devHandle = hid_open_path(pathh);
