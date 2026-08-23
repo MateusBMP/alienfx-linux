@@ -9,7 +9,7 @@ include(FetchContent)
 
 FetchContent_Declare(
   CLI11
-  GIT_TAG main
+  GIT_TAG v2.7.2 # was: main
   GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git)
 FetchContent_MakeAvailable(CLI11)
 

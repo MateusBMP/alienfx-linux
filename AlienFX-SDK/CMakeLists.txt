@@ -14,7 +14,7 @@ set(BUILD_SHARED_LIBS OFF)
 FetchContent_Declare(
   libusb
   GIT_REPOSITORY https://github.com/libusb/libusb-cmake.git
-  GIT_TAG main
+  GIT_TAG v1.0.30-0 # was: main
   GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(libusb)
 
@@ -23,8 +23,13 @@ FetchContent_MakeAvailable(libusb)
 FetchContent_Declare(
   LoguruGitRepo
   GIT_REPOSITORY https://github.com/emilk/loguru.git
-  GIT_TAG master
-  GIT_SHALLOW TRUE)
+  # loguru has never cut a release tag with CMake support (its CMakeLists.txt,
+  # and the loguru::loguru ALIAS this project links against, only exist on
+  # master) -- v2.1.0, its latest tag, predates both and won't configure.
+  # Pin to a specific master commit instead, for reproducibility without a
+  # buildable tag to pin to. GIT_SHALLOW doesn't work with a raw commit SHA.
+  GIT_TAG f9a628b67bf960bbeb6eddd1227a3e6f4d631f1c # was: master, 2026-07-31
+)
 set(LOGURU_WITH_STREAMS ON)
 FetchContent_MakeAvailable(LoguruGitRepo)
 
@@ -92,7 +97,9 @@ endif()
 FetchContent_Declare(
   hidapi
   GIT_REPOSITORY https://github.com/libusb/hidapi.git
-  GIT_TAG master
+  GIT_TAG hidapi-0.15.0 # was: master -- do not go lower: this is when
+                        # hid_send_output_report/hid_get_input_report/
+                        # hid_get_report_descriptor were added
   GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(hidapi)
 
@@ -102,7 +109,7 @@ FetchContent_MakeAvailable(hidapi)
 FetchContent_Declare(
   json
   GIT_REPOSITORY https://github.com/nlohmann/json.git
-  GIT_TAG master
+  GIT_TAG v3.12.0 # was: master
   GIT_SHALLOW TRUE)
 FetchContent_MakeAvailable(json)
 
