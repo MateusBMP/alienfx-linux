@@ -1,3 +1,4 @@
+#include <fcntl.h>
 #include <poll.h>
 #include <unistd.h>
 
@@ -8,6 +9,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <format>
+#include <iomanip>
 #include <iostream>
 #include <loguru.hpp>
 #include <map>
@@ -18,6 +20,7 @@
 #include "AlienFX_SDK.h"
 #include "AlienFan-SDK.h"
 #include "const.h"
+#include "hidapi.h"
 
 using namespace std;
 
@@ -147,7 +150,22 @@ static void InstallSignalHandlers() {
     sigaction(SIGTERM, &sa, nullptr);
 }
 
+// Prompts read from /dev/tty when available, falling back to stdin. This
+// decouples interactive prompts (probe's y/N and per-light names) from
+// whatever stdin happens to be -- a pipe, a redirect from a wrapper script --
+// so a non-interactive stdin can't be mistaken for "no input coming" and a
+// genuinely interactive run still works when invoked through something that
+// redirects fd 0.
+static int PromptFd() {
+    static int fd = []() {
+        int f = open("/dev/tty", O_RDONLY);
+        return f >= 0 ? f : STDIN_FILENO;
+    }();
+    return fd;
+}
+
 static string ReadLineTrimmed() {
+    int fd = PromptFd();
     if (g_interrupted) throw InputInterrupted{};
     // std::cin is tied to std::cout by default, so a read from cin normally
     // flushes any pending prompt text first -- that's the only reason a
@@ -157,11 +175,11 @@ static string ReadLineTrimmed() {
     // would sit in cout's buffer, invisible, for as long as this blocks.
     std::cout.flush();
     // Wait for input via poll() first rather than going straight into a
-    // blocking getline(): poll() is reliably interrupted by a signal
-    // (EINTR), whereas a buffered stdio read is not guaranteed to be. This
-    // is what actually lets Ctrl-C break out of a stuck prompt.
+    // blocking read(): poll() is reliably interrupted by a signal (EINTR),
+    // whereas a buffered stdio read is not guaranteed to be. This is what
+    // actually lets Ctrl-C break out of a stuck prompt.
     struct pollfd pfd {
-        STDIN_FILENO, POLLIN, 0
+        fd, POLLIN, 0
     };
     while (true) {
         int rv = poll(&pfd, 1, -1);
@@ -174,9 +192,24 @@ static string ReadLineTrimmed() {
     }
 
     string s;
-    if (!getline(cin, s) || g_interrupted) throw InputInterrupted{};
+    char c;
+    while (true) {
+        ssize_t n = read(fd, &c, 1);
+        if (n == 0) throw InputInterrupted{};  // EOF: nothing more is coming
+        if (n < 0) {
+            if (errno == EINTR) {
+                if (g_interrupted) throw InputInterrupted{};
+                continue;
+            }
+            throw InputInterrupted{};
+        }
+        if (c == '\n') break;
+        s.push_back(c);
+    }
+    if (g_interrupted) throw InputInterrupted{};
+
     // trim whitespace
-    auto is_ws = [](unsigned char c) { return std::isspace(c); };
+    auto is_ws = [](unsigned char ch) { return std::isspace(ch); };
     while (!s.empty() && is_ws((unsigned char)s.front())) s.erase(s.begin());
     while (!s.empty() && is_ws((unsigned char)s.back())) s.pop_back();
     return s;
@@ -584,12 +617,70 @@ int main(int argc, char** argv) {
     int probe_lights = -1;
     int probe_dev = -1;
     int probe_light = -1;
+    bool probe_yes = false;
+    bool probe_dry_run = false;
     cmd_probe->add_option("--lights", probe_lights, "How many lights to test");
     cmd_probe->add_option("--dev", probe_dev,
                           "Only probe a specific device index");
     cmd_probe->add_option("--light", probe_light,
                           "Only probe a specific light id");
+    cmd_probe->add_flag("-y,--yes", probe_yes,
+                        "Assume yes to the confirmation prompt (still "
+                        "prompts for names)");
+    cmd_probe->add_flag(
+        "--dry-run", probe_dry_run,
+        "List detected HID devices without opening any of them");
     cmd_probe->callback([&]() {
+        if (probe_dry_run) {
+            // Known AlienFX vendor IDs: Alienware, Darfon (RGB keyboards),
+            // Microchip (monitors), Primax (mice), Chicony (external
+            // keyboards). Mirrors AlienFX_SDK's own enumeration filter, kept
+            // separately here so --dry-run needs no SDK internals and can
+            // run without opening a single device.
+            auto isKnownVendor = [](unsigned short vid) {
+                switch (vid) {
+                    case 0x187c:
+                    case 0x0d62:
+                    case 0x0424:
+                    case 0x0461:
+                    case 0x04f2:
+                        return true;
+                    default:
+                        return false;
+                }
+            };
+            hid_init();
+            auto* devs = hid_enumerate(0, 0);
+            cout << "probe --dry-run: HID devices found (none of these are "
+                    "opened):\n";
+            for (auto* d = devs; d; d = d->next) {
+                bool known = isKnownVendor(d->vendor_id);
+                cout << (known ? "* " : "  ") << "VID 0x" << std::hex
+                     << std::setw(4) << std::setfill('0') << d->vendor_id
+                     << " PID 0x" << std::setw(4) << std::setfill('0')
+                     << d->product_id << std::dec << "  usage_page=0x"
+                     << std::hex << d->usage_page << " usage=0x" << d->usage
+                     << std::dec << "  iface=" << d->interface_number << "  "
+                     << (d->path ? d->path : "?")
+                     << (known ? "  <- would be probed by `probe`" : "")
+                     << "\n";
+            }
+            hid_free_enumeration(devs);
+            return;
+        }
+
+        cout << "probe opens raw HID nodes on your Alienware/Darfon/etc. "
+                "devices to test lights.\n"
+             << "If anything goes wrong, from another terminal or SSH "
+                "session:\n"
+             << "  sudo pkill alienfx_cli\n"
+             << "and if a keyboard stops responding, rebind its usbhid "
+                "driver, e.g.:\n"
+             << "  echo -n '<bus-port:iface>' | sudo tee "
+                "/sys/bus/usb/drivers/usbhid/bind\n"
+             << "Run `alienfx_cli probe --dry-run` first to see what would "
+                "be opened.\n\n";
+
         ensureInit();
 
         for (auto& d : afx_map.fxdevs) {
@@ -600,9 +691,11 @@ int main(int argc, char** argv) {
                  << " +++++\n";
         }
 
-        cout << "Do you want to set devices and lights names? (y/N) ";
-        auto ans = ReadLineTrimmed();
-        if (ans.empty() || (ans[0] != 'y' && ans[0] != 'Y')) return;
+        if (!probe_yes) {
+            cout << "Do you want to set devices and lights names? (y/N) ";
+            auto ans = ReadLineTrimmed();
+            if (ans.empty() || (ans[0] != 'y' && ans[0] != 'Y')) return;
+        }
 
         for (size_t di = 0; di < afx_map.fxdevs.size(); di++) {
             if (probe_dev != -1 && (int)di != probe_dev) continue;
