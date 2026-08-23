@@ -669,6 +669,27 @@ int main(int argc, char** argv) {
             return;
         }
 
+#ifdef ALIENFX_HID_BACKEND_LIBUSB
+        // This build was configured with -DALIENFX_HID_BACKEND=libusb,
+        // which detaches the kernel driver from whatever HID interface it
+        // opens (see the comment on that option in AlienFX-SDK/CMakeLists.txt)
+        // and only reattaches it when the device is closed. `probe` opens
+        // every detected device and then blocks on an interactive prompt --
+        // on hardware where an AlienFX-family VID also owns a HID input
+        // interface, that combination can disable the very keyboard needed
+        // to answer the prompt, with no way to recover except from another
+        // machine. Refuse to run interactively; --dry-run still works.
+        if (!probe_yes) {
+            cerr << "probe is disabled on a libusb-backend build: it can "
+                    "detach and disable a keyboard, then block on a prompt "
+                    "with no way to answer it. Rebuild with the default "
+                    "-DALIENFX_HID_BACKEND=hidraw, or re-run with --yes if "
+                    "you understand the risk and have a way to recover "
+                    "(see `probe --dry-run` and this build's CLAUDE.md).\n";
+            return;
+        }
+#endif
+
         cout << "probe opens raw HID nodes on your Alienware/Darfon/etc. "
                 "devices to test lights.\n"
              << "If anything goes wrong, from another terminal or SSH "

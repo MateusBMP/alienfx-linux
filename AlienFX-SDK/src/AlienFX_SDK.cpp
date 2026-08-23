@@ -12,7 +12,6 @@
 
 #include "alienfx_control.h"
 #include "hidapi.h"
-#include "hidapi_libusb.h"
 #include "libusb.h"
 #include "libusb_helper.h"
 #include "nlohmann/json.hpp"
