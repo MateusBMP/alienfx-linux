@@ -76,3 +76,4 @@ Single-file CLI11 app (`alienfx-cli/src/main.cpp`). Each subcommand is registere
 - No `.clang-format` is checked in. `AlienFX-SDK`/`alienfx-cli` follow a 4-space, Google-ish style; `AlienFan-SDK` follows a different (LLVM-ish) style. Match whatever the file you're editing already uses rather than reformatting wholesale.
 - Commit messages use Conventional Commits with a scope, e.g. `feat(sdk): ...`, `fix(cli): ...`, `chore(readme): ...`.
 - Do not add a `Co-Authored-By: Claude ...` trailer to commit messages.
+- Do not use `git worktree` / the `EnterWorktree` tool in this repo. Work directly in the main checkout on whatever branch is already active (normally `main`) — do not create a separate worktree or branch for changes.
