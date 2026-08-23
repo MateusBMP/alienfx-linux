@@ -22,7 +22,8 @@ cmake --build build
 - `-DCMAKE_BUILD_TYPE=Debug` defines `DEBUG`, which raises loguru to `INFO` verbosity and enables hex dumps of every HID packet sent in `Functions::PrepareAndSend` — this is the primary way to debug protocol issues.
 - Binaries land directly in `build/` (`alienfx_cli`, `example_app`); libraries in `build/<SDK-dir>/`.
 - `.cpp` sources are picked up via `file(GLOB_RECURSE ... CONFIGURE_DEPENDS src/*.cpp)` per target, so new source files don't need CMakeLists edits (re-run cmake configure if a new file isn't picked up).
-- Dependencies (libusb-cmake, hidapi, loguru, nlohmann/json, CLI11) are pulled with `FetchContent` pinned to `main`/`master` — configuring needs network access and can pick up upstream breakage since there are no pinned commits/tags.
+- Dependencies (libusb-cmake, hidapi, loguru, nlohmann/json, CLI11) are pulled with `FetchContent`, pinned to release tags — configuring needs network access.
+- `ALIENFX_HID_BACKEND` (CMake cache option on `AlienFX-SDK`, default `hidraw`) selects hidapi's transport backend. Keep it on `hidraw`: hidapi's libusb backend unconditionally detaches the kernel driver from any HID interface it opens, which on hardware where an AlienFX vendor ID (e.g. Darfon, `0x0d62`) also owns a real keyboard/mouse interface can disable that input device for as long as the process has it open — see `docs/probe-keyboard-lockup.md`. `ALIENFX_HID_BACKEND=libusb` still exists for hardware whose AlienFX interface has no hidraw node, but `probe` refuses to run interactively on that config without `--yes`. Building `hidraw` needs libudev development files (`systemd-libs` on Arch, `libudev-dev` on Debian/Ubuntu, `systemd-devel` on Fedora).
 
 ## Testing
 
@@ -33,7 +34,7 @@ sudo ./build/alienfx_cli status
 sudo ./build/alienfx_cli setall 255 0 0
 ```
 
-Device/light name mappings are configured interactively once via `probe` — note `sudo` resets `$HOME`, so the invocation must preserve the real user's home for mappings to land in the right place: `HOME=/home/<username> sudo ./alienfx_cli probe`.
+Device/light name mappings are configured interactively once via `probe` — note `sudo` resets `$HOME`, so the invocation must preserve the real user's home for mappings to land in the right place: `HOME=/home/<username> sudo ./alienfx_cli probe`. Run `probe --dry-run` first (no root needed) to see which HID devices/collections would be opened without touching any of them — useful sanity check before probing unfamiliar hardware. `probe` also warns and prints recovery commands before opening anything, and honors SIGINT/SIGTERM cleanly (closes all open HID handles instead of leaving the process, and any kernel driver it touched, mid-open) — see `docs/probe-keyboard-lockup.md` for the incident this hardening responds to.
 
 ## Architecture
 
@@ -41,11 +42,11 @@ Device/light name mappings are configured interactively once via `probe` — not
 
 `AlienFX_SDK::Functions` (`AlienFX-SDK/src/AlienFX_SDK.cpp`) represents one HID device. There is no per-model subclassing — almost every public method (`SetAction`, `SetMultiColor`, `SetBrightness`, `Reset`, `UpdateColors`, ...) is a `switch (version)` over `Afx_Version` (`API_V2` .. `API_V8`, plus the unused/removed `API_ACPI`). Adding support for a new protocol variant means adding cases to these switches and to the command tables in `alienfx_control.h`, not writing a new class.
 
-`Functions::AlienFXProbeDevice` determines the API version from **VID + max HID packet size**, not a static device table — see the `switch (vidd) { case 0x187c: switch (checker) {...} }` logic. Known VIDs: `0x187c` Alienware, `0x0d62` Darfon (RGB keyboards → always API_V5), `0x0424` Microchip (monitors), `0x0461` Primax (mice), `0x04f2` Chicony (external keyboards).
+`Functions::AlienFXProbeDevice` determines the API version from **VID + max HID packet size**, not a static device table — see the `switch (vidd) { case 0x187c: switch (checker) {...} }` logic. Known VIDs: `0x187c` Alienware, `0x0d62` Darfon (RGB keyboards → always API_V5), `0x0424` Microchip (monitors), `0x0461` Primax (mice), `0x04f2` Chicony (external keyboards). `Mappings::AlienFXEnumDevices` pre-filters `hid_enumerate()` results to these five VIDs and dedupes by hidraw path before calling `AlienFXProbeDevice` at all — see `docs/probe-keyboard-lockup.md` for why that matters (a composite device enumerates as one `hid_device_info` entry per top-level HID collection, all sharing one path).
 
 `alienfx_control.h` holds the wire protocol as byte-template arrays per version (`COMMV1_*` .. `COMMV8_*`), each documented inline with its byte layout. `Functions::PrepareAndSend` copies a template into a buffer, applies positional patches (`Afx_icommand{offset, bytes}`), sets the report ID from `reportIDList[version]`, then dispatches to the version-appropriate hidapi transport (output report / feature report / raw write / write-then-read).
 
-This is a **Linux port of a Windows codebase**; deltas from the original are called out with `// NOTE:` comments — e.g. packet lengths run one byte longer than on Windows, hidapi strips the report ID byte for zero-report-ID devices (compensated with `length++`). `AlienFX-SDK/include/libusb_helper.h` + `src/libusb_helper.cpp` reimplement the Win32 HID API surface (`HidD_SetFeature`, `HidD_SetOutputReport`, `WriteFile`, `ReadFile`, `HidD_GetFeature`, `HidD_GetInputReport`) on top of hidapi/libusb so the rest of the SDK reads like the original Windows source. Preserve these notes when touching protocol code — they encode reverse-engineered, hardware-verified behavior.
+This is a **Linux port of a Windows codebase**; deltas from the original are called out with `// NOTE:` comments — e.g. packet lengths run one byte longer than on Windows, and the report-ID-0 byte is stripped before hitting the wire (compensated with `length++`) — by hidapi itself under the libusb backend, or by the kernel's `usbhid` driver under the default hidraw backend; either way the compensation is unchanged. `AlienFX-SDK/include/libusb_helper.h` + `src/libusb_helper.cpp` reimplement the Win32 HID API surface (`HidD_SetFeature`, `HidD_SetOutputReport`, `WriteFile`, `ReadFile`, `HidD_GetFeature`, `HidD_GetInputReport`) on top of hidapi (backend chosen by `ALIENFX_HID_BACKEND`, see Build) so the rest of the SDK reads like the original Windows source. Preserve these notes when touching protocol code — they encode reverse-engineered, hardware-verified behavior.
 
 ### AlienFX_SDK::Mappings: device registry + persistence
 
