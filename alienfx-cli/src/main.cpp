@@ -1,5 +1,10 @@
+#include <poll.h>
+#include <unistd.h>
+
 #include <CLI/CLI.hpp>
+#include <cerrno>
 #include <chrono>
+#include <csignal>
 #include <cstdint>
 #include <cstdlib>
 #include <format>
@@ -116,9 +121,60 @@ static vector<AlienFX_SDK::Afx_action> ParseActionList(
     return actions;
 }
 
+// Thrown out of a blocking prompt (ReadLineTrimmed) when the process receives
+// SIGINT/SIGTERM. Left uncaught by CLI11_PARSE's own CLI::ParseError handler,
+// it propagates all the way out to main(), which catches it and returns
+// normally -- letting afx_map's destructor close every open HID handle
+// (hid_close reattaches any kernel driver a libusb-backed build detached)
+// instead of the process dying mid-prompt with devices still open.
+struct InputInterrupted {};
+
+static volatile std::sig_atomic_t g_interrupted = 0;
+
+static void OnTerminationSignal(int) { g_interrupted = 1; }
+
+// Installed *after* loguru::init() so it overrides loguru's own SIGINT/SIGTERM
+// handlers (see main(), which also disables them via signal_options).
+static void InstallSignalHandlers() {
+    struct sigaction sa {};
+    sa.sa_handler = OnTerminationSignal;
+    sigemptyset(&sa.sa_mask);
+    // Deliberately no SA_RESTART: a prompt blocked on stdin must be
+    // interruptible, or Ctrl-C during `probe` can't break the deadlock it's
+    // meant to fix.
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, nullptr);
+    sigaction(SIGTERM, &sa, nullptr);
+}
+
 static string ReadLineTrimmed() {
+    if (g_interrupted) throw InputInterrupted{};
+    // std::cin is tied to std::cout by default, so a read from cin normally
+    // flushes any pending prompt text first -- that's the only reason a
+    // prompt printed via `cout << "...: "` (no trailing newline) used to show
+    // up before this function blocked. poll() doesn't touch cin and isn't
+    // affected by that tie, so without an explicit flush here the prompt
+    // would sit in cout's buffer, invisible, for as long as this blocks.
+    std::cout.flush();
+    // Wait for input via poll() first rather than going straight into a
+    // blocking getline(): poll() is reliably interrupted by a signal
+    // (EINTR), whereas a buffered stdio read is not guaranteed to be. This
+    // is what actually lets Ctrl-C break out of a stuck prompt.
+    struct pollfd pfd {
+        STDIN_FILENO, POLLIN, 0
+    };
+    while (true) {
+        int rv = poll(&pfd, 1, -1);
+        if (rv > 0) break;
+        if (rv < 0 && errno == EINTR) {
+            if (g_interrupted) throw InputInterrupted{};
+            continue;
+        }
+        throw InputInterrupted{};
+    }
+
     string s;
-    getline(cin, s);
+    if (!getline(cin, s) || g_interrupted) throw InputInterrupted{};
     // trim whitespace
     auto is_ws = [](unsigned char c) { return std::isspace(c); };
     while (!s.empty() && is_ws((unsigned char)s.front())) s.erase(s.begin());
@@ -138,7 +194,17 @@ int main(int argc, char** argv) {
 #else
     loguru::g_stderr_verbosity = loguru::Verbosity_INFO;
 #endif
-    loguru::init(argc, argv);
+    // loguru defaults to capturing SIGINT/SIGTERM itself and re-raising with
+    // SIG_DFL, which kills the process without ever running static
+    // destructors -- so Ctrl-C during `probe` would skip afx_map's
+    // destructor and leave every open HID device (and, on a libusb-backed
+    // build, a detached kernel driver) exactly as it was mid-prompt. Disable
+    // that and install our own handlers below instead.
+    loguru::Options loguruOpts;
+    loguruOpts.signal_options.sigint = false;
+    loguruOpts.signal_options.sigterm = false;
+    loguru::init(argc, argv, loguruOpts);
+    InstallSignalHandlers();
     argv = app.ensure_utf8(argv);
     app.set_version_flag("-v", string("alienfx-cli v") + VERSION);
 
@@ -801,6 +867,10 @@ int main(int argc, char** argv) {
 
     app.require_subcommand(1);
 
-    CLI11_PARSE(app, argc, argv);
+    try {
+        CLI11_PARSE(app, argc, argv);
+    } catch (const InputInterrupted&) {
+        cerr << "\nInterrupted -- closing HID devices...\n";
+    }
     return 0;
 }
