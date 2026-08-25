@@ -272,3 +272,181 @@ unattributable, so they're listed here as separate future work instead:
   device on the test hardware used here (both AlienFX collections did have
   hidraw nodes), but a build configured with `-DALIENFX_HID_BACKEND=libusb`
   remains available, clearly warned, for hardware where it would.
+- `probe --yes` only skips the top-level "Do you want to set devices and
+  lights names?" confirmation (`alienfx-cli/src/main.cpp`, the `if
+  (!probe_yes)` guard around that prompt). The unconditional per-device
+  "New name (ENTER to skip):" and per-light naming prompts right after it are
+  *not* gated by `--yes` — on a `libusb`-backend build, `probe --yes` still
+  reaches an unanswerable `ReadLineTrimmed()` after opening every detected
+  device, just one prompt later than before. Found while building the
+  addendum below's keyboard repro, which uses exactly this path. Worth
+  gating those too if `libusb` stays available as an opt-out backend.
+
+## Addendum: response to upstream review
+
+Upstream (T-Troll/alienfx-tools) responded to this report by defending
+`libusb` on performance grounds and challenging two things: whether the
+kernel-driver detach is really `libusb`-specific (citing Tron hardware
+working fine), and asking for the acquisition call site plus a real hang
+backtrace. This addendum answers both, with sources and measurements taken
+on this fork's test hardware (`187c:0550` Alienware LED controller, API_V4;
+`0d62:3740` Darfon keyboard, API_V5), against hidapi pinned at
+`hidapi-0.15.0` (commit `d6b2a974608dec3b76fb1e36c189f22b9cf3650c`, as
+vendored by this repo's own `FetchContent`).
+
+### Where the acquisition happens, and why it isn't device-specific
+
+`libusb/hid.c` compiles `#define DETACH_KERNEL_DRIVER` unconditionally on
+every non-FreeBSD build (line 68-70) — this is not conditional on VID/PID,
+device class, or anything else. Every `hid_open()`/`hid_open_path()` call
+that succeeds runs `hidapi_initialize_device()`, which:
+
+- detaches the kernel driver at line 1173-1174
+  (`libusb_kernel_driver_active()` → `libusb_detach_kernel_driver()`),
+- claims the interface at line 1185 (`libusb_claim_interface()`),
+- and only reattaches inside `hid_close()`, line 1728
+  (`libusb_attach_kernel_driver()`), which never runs while a process holds
+  the handle open.
+
+So the claim "it works fine for Tron" isn't evidence the detach is
+Darfon-specific — it's evidence that *Tron's* AlienFX interface isn't also
+its keyboard. USB kernel-driver ownership is per **USB interface**, not per
+HID **collection** (Windows' HID class driver exposes each top-level
+collection as its own `CreateFile` target — that's the actual reason the
+Windows original never hits this). This Darfon keyboard's report descriptor
+(`docs/evidence/README.md`, or read `/sys/class/hidraw/hidrawN/device/report_descriptor`
+yourself for the node bound to VID `0d62`) puts four top-level HID
+collections — keyboard, consumer controls, wireless-radio, and the vendor
+`0xFF89`/usage `0xCC` lighting collection — on **one** interface (interface
+1, the boot-protocol keyboard); interface 0 is vendor-class with zero
+endpoints, invisible to hidapi's libusb backend entirely
+(`should_enumerate_interface()`, line 776, only admits `LIBUSB_CLASS_HID`).
+There is no "open the lighting collection instead" option under `libusb` on
+this hardware — the interface *is* the keyboard, full stop. `docs/evidence/scripts/safe-acquisition-demo.sh`
+reproduces the identical detach/claim/reattach sequence against `187c:0550`
+(the LED controller) instead, to show it isn't Darfon-specific either — it's
+just harmless there because nothing depends on that interface's `usbhid`
+binding. Captured live with a breakpoint on the real call
+(`docs/evidence/data/safe-demo-gdb-backtrace.log`):
+
+```
+Thread 1 "hidbench-libusb" hit Breakpoint 1, libusb_detach_kernel_driver
+    (dev_handle=0x5555555ab920, interface_number=0) at libusb/core.c:2180
+#0  libusb_detach_kernel_driver (...) at libusb/core.c:2180
+#1  hidapi_initialize_device (...) at libusb-src/libusb/hid.c:1174
+#2  hid_open_path (path=0x... "3-7:1.0") at libusb-src/libusb/hid.c:1315
+#3  hid_open (vendor_id=6268, product_id=1360, serial_number=0x0) at libusb-src/libusb/hid.c:946
+#4  main ()
+```
+
+(`vendor_id=6268`/`product_id=1360` decimal = `0x187c`/`0x0550` — unambiguously
+the LED controller, opened by nothing more than `hid_open(vid, pid, NULL)`.)
+
+### The hang backtrace
+
+`docs/evidence/scripts/keyboard-repro-watchdog.sh` reproduces the original
+hang end-to-end against the real `0d62:3740` device: it launches
+`probe --yes` under `setsid` (so `/dev/tty` is unreachable) with stdin on a
+FIFO the script itself holds open (so the read never sees EOF either) — the
+process reaches the exact same unanswerable prompt as the original report,
+with no human needing to withhold input to get there, and a watchdog armed
+before anything opens as an automatic backstop. Ran clean: the keyboard's
+`3-8:1.1` interface was confirmed detached, the script's own recovery
+rebound it to `usbhid` in ~2.2s (well inside the 45s backstop, which never
+had to fire), and the keyboard was confirmed physically responsive
+afterward. `docs/evidence/data/kbd-repro-hang-backtrace.log`
+(`thread apply all bt` on the genuinely blocked process):
+
+```
+Thread 1 "alienfx_cli" (main): #3 poll() #4 ReadLineTrimmed() at main.cpp:185
+                                #5 operator() at main.cpp:728
+Thread 2/3 "alienfx_cli" (reader threads, one per open device):
+                                pthread_cond_timedwait / poll()
+                                -> libusb_handle_events -> read_thread at hid.c:1055
+Thread 4 "libusb_event":       poll() -> linux_udev_event_thread_main (hotplug monitor)
+```
+
+Every thread is idle. None are inside `libusb_detach_kernel_driver`,
+`libusb_claim_interface`, or any other acquisition code — confirming
+**upstream is right that `libusb` itself isn't what's blocking**. The
+original report's word "deadlock" overstated it: the main thread is parked
+in the interactive per-device naming prompt
+(`alienfx-cli/src/main.cpp:728`, "New name (ENTER to skip):"), reached even
+with `probe --yes` since that flag only gates the earlier y/N confirmation
+(see the follow-up above). The process log
+(`docs/evidence/data/kbd-repro-probe-stdout.log`) shows both devices already
+open — and the keyboard interface already detached — before this prompt was
+ever reached: enumeration-time detach and prompt-time block are two
+independent events that happen to compose. Neither half alone is a bug in
+the other's code; together they disable input with no in-process recovery
+path, which was the entire point of switching the default backend,
+independent of whether "hang" was the precisely correct word for it.
+
+### Performance: upstream has a real point, with a mechanism
+
+Measured with `docs/evidence/scripts/hidbench.c` against `187c:0550`, both
+backends, n=200, 34-byte reports (this device's real `API_V4` length):
+
+| hidapi call | wire path | hidraw mean/p50 | libusb mean/p50 |
+|---|---|---|---|
+| `hid_send_feature_report` | control transfer, both backends | 126.6us / 120us | 146.0us / 139us |
+| `hid_send_output_report` | interrupt-OUT (hidraw) vs. control (libusb) | 63.8ms / 64.0ms | **150.2us / 140us** |
+| `hid_write` | interrupt-OUT, both backends | 63.7ms / 64.0ms | 63.7ms / 64.0ms |
+
+Full data and methodology: `docs/evidence/README.md`. The mechanism: this
+device's OUT endpoint (`0x01`, `wMaxPacketSize=33`) descriptor has
+`bInterval=100`, i.e. USB scheduling only guarantees it a slot once per
+100ms at full speed. hidraw's `hid_send_output_report`
+(`linux/hid.c:1242-1258`, `ioctl(HIDIOCSOUTPUT)`) and `hid_write`
+(`linux/hid.c:1104-1120`) both go over that interrupt-OUT endpoint. The
+**libusb** backend's `hid_send_output_report` (`libusb/hid.c:1645-1672`)
+instead uses a **control**-endpoint `SET_REPORT`, which has no polling
+interval — confirmed as a real, descriptor-level **~425x** latency
+difference (63.8ms vs 150us) on exactly the call the SDK's
+`API_V2`/`V3`/`V4` code path uses (`PrepareAndSend` → `HidD_SetOutputReport`).
+`hid_send_feature_report` is a control transfer under both backends
+(`API_V5`/`V8` in the SDK) and confirms the control experiment: 127us vs.
+146us, no meaningful gap — which is what makes the `output` result credible
+rather than harness noise. `hid_write` confirms the same theory from the
+other direction: it uses the interrupt-OUT endpoint on *both* backends when
+one exists (`libusb/hid.c:1442`, `linux/hid.c:1114`), and lands at the same
+~64ms either way — it's the endpoint's `bInterval`, not "hidraw" as a
+category, that's slow. (`API_V4` doesn't call `hid_write()`; included as a
+second confirmation of the mechanism.)
+
+### Where this leaves things
+
+Upstream is right that `hidraw` is meaningfully slower on this specific
+call, for a real, identifiable reason (endpoint choice, not implementation
+quality), and right that `libusb` itself isn't what blocks the process during
+the hang. Upstream's "unrelated to other devices" framing doesn't hold up:
+the detach is unconditional in hidapi's `libusb` backend on every device it
+opens; it just isn't visible on hardware where the AlienFX interface and a
+real input device aren't the same USB interface.
+
+Proposed way to keep both properties instead of picking one backend
+globally:
+
+- Keep `hidraw` as the default — it's the only backend able to open the
+  `0d62:3740` lighting collection at all without taking the keyboard
+  interface, since that collection has no separate USB interface to open.
+- Port the Windows original's usage guard (`caps.Usage == 0xcc`) into
+  `AlienFXProbeDevice`'s Darfon case — hidraw's `hid_enumerate()` now
+  populates real `usage_page`/`usage` per collection, which the `libusb`
+  backend never did, so this guard is implementable on Linux for the first
+  time.
+- Close the output-report latency gap without reverting the backend:
+  investigate the `usbhid` kernel quirk
+  `HID_QUIRK_NO_OUTPUT_REPORTS_ON_INTR_EP` (shippable as a udev/hwdb rule
+  scoped to `187c:0550`) to force output reports back onto the control
+  endpoint under `hidraw`; prefer `hid_send_feature_report` over
+  `hid_send_output_report` where a device's descriptor exposes the same
+  command as a feature report; keep `-DALIENFX_HID_BACKEND=libusb` available
+  for hardware whose AlienFX interface is genuinely standalone, where the
+  interval cost is real and the detach risk isn't.
+- Fix the `API_V5` length bug noted above (32 from `wMaxPacketSize` vs. the
+  descriptor's actual 8-byte feature report) so the Darfon lighting
+  collection can be addressed at all, once it's being opened correctly.
+- Gate the per-device/per-light naming prompts behind `--yes` too (see the
+  follow-up above), so a `libusb`-backend `probe --yes` can't still reach an
+  unanswerable prompt.

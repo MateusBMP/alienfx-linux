@@ -1,0 +1,1 @@
+mode=write length=34 n=200 failures=0 min=12401us mean=63735.4us p50=63995us p99=64229us max=64229us

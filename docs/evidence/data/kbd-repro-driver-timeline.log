@@ -1,0 +1,10 @@
+=== 2026-08-24T19:17:19,053423718-03:00 start ===
+IFACE_NAME=3-8:1.1 BUS_PORT=3-8
+/sys/bus/usb/drivers/usbhid
+=== 2026-08-24T19:17:19,075607843-03:00 launching probe ===
+detach observed: 1 (after up to 10s poll)
+/sys/devices/pci0000:00/0000:00:14.0/usb3/3-8/3-8:1.1/driver
+=== 2026-08-24T19:17:20,880980963-03:00 recover() invoked ===
+post-recover driver: /sys/bus/usb/drivers/usbhid
+=== 2026-08-24T19:17:23,035616459-03:00 final state ===
+final driver: /sys/bus/usb/drivers/usbhid

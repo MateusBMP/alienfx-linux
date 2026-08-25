@@ -1,0 +1,1 @@
+mode=feature length=34 n=200 failures=0 min=100us mean=126.6us p50=120us p99=212us max=212us

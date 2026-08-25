@@ -1,0 +1,6 @@
+=== 2026-08-24T19:17:01,879412971-03:00 before ===
+/sys/bus/usb/drivers/usbhid
+=== 2026-08-24T19:17:02,186521690-03:00 during (hidbench-libusb pid 786648 running) ===
+/sys/bus/usb/drivers/usbhid
+=== 2026-08-24T19:17:02,191358773-03:00 after ===
+/sys/bus/usb/drivers/usbhid

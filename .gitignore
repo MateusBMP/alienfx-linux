@@ -1,3 +1,4 @@
 .cache/
 build/
+build-libusb/
 compile_commands.json
