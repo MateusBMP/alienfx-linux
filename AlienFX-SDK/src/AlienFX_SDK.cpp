@@ -294,6 +294,7 @@ bool Functions::AlienFXProbeDevice(libusb_context* ctxx, libusb_device* usbDev,
     devHandle = UsbHidHandle{};
     devHandle.interface = interfaceNumber;
     PopulateEndpoints(usbDev, &devHandle);
+    PopulateHidrawPath(vidd, pidd, &devHandle);
 
     // A plain, non-exclusive open() of the device node: this claims no
     // interface and detaches no kernel driver (that only happens, scoped to
@@ -960,6 +961,12 @@ bool Functions::SetGlobalEffects(std::uint8_t effType, std::uint8_t mode,
 std::uint8_t Functions::GetDeviceStatus() {
     std::uint8_t buffer[MAX_BUFFERSIZE];
     // unsigned long written;
+    // NOTE: HidD_GetFeature/HidD_GetInputReport read the target report ID
+    // back out of buffer[0] (ControlTransferReport's reportNumber, see
+    // libusb_helper.cpp) -- unlike PrepareAndSend's send path, nothing else
+    // here ever wrote it, so an uninitialized buffer sent a garbage report
+    // ID and made every status read fail.
+    buffer[0] = reportIDList[version];
     if (devHandle.handle) switch (version) {
             // case API_V9:
             //	HidD_GetInputReport(devHandle, buffer, length);
