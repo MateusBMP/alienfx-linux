@@ -14,8 +14,10 @@ Linux port of [T-Troll/alienfx-tools](https://github.com/T-Troll/alienfx-tools):
 ## Build
 
 ```bash
-cmake -S . -B build -G Ninja -DALIENFX_BUILD_CLI=ON -DALIENFX_BUILD_EXAMPLE=ON
-cmake --build build
+mkdir build/
+cd build/
+cmake .. -G Ninja -DALIENFX_BUILD_CLI=ON -DALIENFX_BUILD_EXAMPLE=ON #OPTIONAL -DCMAKE_BUILD_TYPE=Debug
+ninja
 ```
 
 - Both apps are **off by default** (`CMakeLists.txt`) — the two SDK libraries always build; `alienfx-cli` and `Example-App` need their `-DALIENFX_BUILD_*=ON` flags.
@@ -30,8 +32,9 @@ cmake --build build
 There is no automated test suite, linter, or CI in this repo. Verification is manual, on real hardware, and generally needs root for HID access:
 
 ```bash
-sudo ./build/alienfx_cli status
-sudo ./build/alienfx_cli setall 255 0 0
+cd build/
+sudo ./alienfx_cli status
+sudo ./alienfx_cli setall 255 0 0
 ```
 
 Device/light name mappings are configured interactively once via `probe` — note `sudo` resets `$HOME`, so the invocation must preserve the real user's home for mappings to land in the right place: `HOME=/home/<username> sudo ./alienfx_cli probe`.
