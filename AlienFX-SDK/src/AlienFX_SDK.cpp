@@ -222,8 +222,7 @@ bool Functions::AlienFXProbeDevice(libusb_context* ctxx, libusb_device* usbDev,
             // 0xcc, see AlienFX_SDK.cpp:198-203 in the Windows source) --
             // not by VID alone, because on these keyboards the AlienFX
             // lighting collection shares one HID interface with the
-            // keyboard collection itself (see docs/hid-transport.md and
-            // docs/probe-keyboard-lockup.md). Windows gets separate device
+            // keyboard collection itself. Windows gets separate device
             // nodes per collection to check that on; Linux has only the
             // interface's report descriptor, which is parsed here to find
             // the same 0xFF89/0xCC collection and read its real Feature
@@ -307,10 +306,6 @@ bool Functions::AlienFXProbeDevice(libusb_context* ctxx, libusb_device* usbDev,
                      << libusb_error_name(openResult);
         return false;
     }
-
-    path = std::to_string(libusb_get_bus_number(usbDev)) + "-" +
-          std::to_string(libusb_get_device_address(usbDev)) + ":" +
-          std::to_string(interfaceNumber);
 
     // Manufacturer/product strings are a plain GET_DESCRIPTOR(STRING) at
     // DEVICE recipient -- always allowed with no claim needed (see

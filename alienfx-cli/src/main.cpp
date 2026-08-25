@@ -1,15 +1,8 @@
-#include <fcntl.h>
-#include <poll.h>
-#include <unistd.h>
-
 #include <CLI/CLI.hpp>
-#include <cerrno>
 #include <chrono>
-#include <csignal>
 #include <cstdint>
 #include <cstdlib>
 #include <format>
-#include <iomanip>
 #include <iostream>
 #include <loguru.hpp>
 #include <map>
@@ -20,7 +13,6 @@
 #include "AlienFX_SDK.h"
 #include "AlienFan-SDK.h"
 #include "const.h"
-#include "libusb.h"
 
 using namespace std;
 
@@ -124,95 +116,11 @@ static vector<AlienFX_SDK::Afx_action> ParseActionList(
     return actions;
 }
 
-// Thrown out of a blocking prompt (ReadLineTrimmed) when the process receives
-// SIGINT/SIGTERM. Left uncaught by CLI11_PARSE's own CLI::ParseError handler,
-// it propagates all the way out to main(), which catches it and returns
-// normally -- letting afx_map's destructor close every open USB handle
-// cleanly via unwinding, instead of the process dying mid-prompt. Each HID
-// transfer already scopes its own interface claim (and any kernel-driver
-// detach that comes with it) to just that one call -- see
-// docs/hid-transport.md -- so no claim is ever outstanding while a prompt is
-// blocked; this is about clean shutdown, not about releasing a stuck claim.
-struct InputInterrupted {};
-
-static volatile std::sig_atomic_t g_interrupted = 0;
-
-static void OnTerminationSignal(int) { g_interrupted = 1; }
-
-// Installed *after* loguru::init() so it overrides loguru's own SIGINT/SIGTERM
-// handlers (see main(), which also disables them via signal_options).
-static void InstallSignalHandlers() {
-    struct sigaction sa {};
-    sa.sa_handler = OnTerminationSignal;
-    sigemptyset(&sa.sa_mask);
-    // Deliberately no SA_RESTART: a prompt blocked on stdin must be
-    // interruptible, or Ctrl-C during `probe` can't break the deadlock it's
-    // meant to fix.
-    sa.sa_flags = 0;
-    sigaction(SIGINT, &sa, nullptr);
-    sigaction(SIGTERM, &sa, nullptr);
-}
-
-// Prompts read from /dev/tty when available, falling back to stdin. This
-// decouples interactive prompts (probe's y/N and per-light names) from
-// whatever stdin happens to be -- a pipe, a redirect from a wrapper script --
-// so a non-interactive stdin can't be mistaken for "no input coming" and a
-// genuinely interactive run still works when invoked through something that
-// redirects fd 0.
-static int PromptFd() {
-    static int fd = []() {
-        int f = open("/dev/tty", O_RDONLY);
-        return f >= 0 ? f : STDIN_FILENO;
-    }();
-    return fd;
-}
-
 static string ReadLineTrimmed() {
-    int fd = PromptFd();
-    if (g_interrupted) throw InputInterrupted{};
-    // std::cin is tied to std::cout by default, so a read from cin normally
-    // flushes any pending prompt text first -- that's the only reason a
-    // prompt printed via `cout << "...: "` (no trailing newline) used to show
-    // up before this function blocked. poll() doesn't touch cin and isn't
-    // affected by that tie, so without an explicit flush here the prompt
-    // would sit in cout's buffer, invisible, for as long as this blocks.
-    std::cout.flush();
-    // Wait for input via poll() first rather than going straight into a
-    // blocking read(): poll() is reliably interrupted by a signal (EINTR),
-    // whereas a buffered stdio read is not guaranteed to be. This is what
-    // actually lets Ctrl-C break out of a stuck prompt.
-    struct pollfd pfd {
-        fd, POLLIN, 0
-    };
-    while (true) {
-        int rv = poll(&pfd, 1, -1);
-        if (rv > 0) break;
-        if (rv < 0 && errno == EINTR) {
-            if (g_interrupted) throw InputInterrupted{};
-            continue;
-        }
-        throw InputInterrupted{};
-    }
-
     string s;
-    char c;
-    while (true) {
-        ssize_t n = read(fd, &c, 1);
-        if (n == 0) throw InputInterrupted{};  // EOF: nothing more is coming
-        if (n < 0) {
-            if (errno == EINTR) {
-                if (g_interrupted) throw InputInterrupted{};
-                continue;
-            }
-            throw InputInterrupted{};
-        }
-        if (c == '\n') break;
-        s.push_back(c);
-    }
-    if (g_interrupted) throw InputInterrupted{};
-
+    getline(cin, s);
     // trim whitespace
-    auto is_ws = [](unsigned char ch) { return std::isspace(ch); };
+    auto is_ws = [](unsigned char c) { return std::isspace(c); };
     while (!s.empty() && is_ws((unsigned char)s.front())) s.erase(s.begin());
     while (!s.empty() && is_ws((unsigned char)s.back())) s.pop_back();
     return s;
@@ -230,17 +138,7 @@ int main(int argc, char** argv) {
 #else
     loguru::g_stderr_verbosity = loguru::Verbosity_INFO;
 #endif
-    // loguru defaults to capturing SIGINT/SIGTERM itself and re-raising with
-    // SIG_DFL, which kills the process without ever running static
-    // destructors -- so Ctrl-C during `probe` would skip afx_map's
-    // destructor and leave every open HID device (and, on a libusb-backed
-    // build, a detached kernel driver) exactly as it was mid-prompt. Disable
-    // that and install our own handlers below instead.
-    loguru::Options loguruOpts;
-    loguruOpts.signal_options.sigint = false;
-    loguruOpts.signal_options.sigterm = false;
-    loguru::init(argc, argv, loguruOpts);
-    InstallSignalHandlers();
+    loguru::init(argc, argv);
     argv = app.ensure_utf8(argv);
     app.set_version_flag("-v", string("alienfx-cli v") + VERSION);
 
@@ -620,93 +518,12 @@ int main(int argc, char** argv) {
     int probe_lights = -1;
     int probe_dev = -1;
     int probe_light = -1;
-    bool probe_yes = false;
-    bool probe_dry_run = false;
     cmd_probe->add_option("--lights", probe_lights, "How many lights to test");
     cmd_probe->add_option("--dev", probe_dev,
                           "Only probe a specific device index");
     cmd_probe->add_option("--light", probe_light,
                           "Only probe a specific light id");
-    cmd_probe->add_flag("-y,--yes", probe_yes,
-                        "Assume yes to the confirmation prompt (still "
-                        "prompts for names)");
-    cmd_probe->add_flag(
-        "--dry-run", probe_dry_run,
-        "List detected HID devices without opening any of them");
     cmd_probe->callback([&]() {
-        if (probe_dry_run) {
-            // Known AlienFX vendor IDs: Alienware, Darfon (RGB keyboards),
-            // Microchip (monitors), Primax (mice), Chicony (external
-            // keyboards). Mirrors AlienFX_SDK's own enumeration filter, kept
-            // separately here so --dry-run needs no SDK internals and can
-            // run without opening a single device -- this uses only
-            // read-only libusb descriptor calls (device list + config
-            // descriptor), no libusb_open at all.
-            auto isKnownVendor = [](unsigned short vid) {
-                switch (vid) {
-                    case 0x187c:
-                    case 0x0d62:
-                    case 0x0424:
-                    case 0x0461:
-                    case 0x04f2:
-                        return true;
-                    default:
-                        return false;
-                }
-            };
-            libusb_context* dryCtx = nullptr;
-            if (libusb_init(&dryCtx) < 0) {
-                cerr << "Failed to initialize libusb\n";
-                return;
-            }
-            libusb_device** devs = nullptr;
-            ssize_t n = libusb_get_device_list(dryCtx, &devs);
-            cout << "probe --dry-run: USB devices found (none of these are "
-                    "opened):\n";
-            for (ssize_t i = 0; i < n; i++) {
-                libusb_device_descriptor d{};
-                if (libusb_get_device_descriptor(devs[i], &d) != 0) continue;
-                bool known = isKnownVendor(d.idVendor);
-                libusb_config_descriptor* cfg = nullptr;
-                if (libusb_get_config_descriptor(devs[i], 0, &cfg) != 0 ||
-                    !cfg)
-                    continue;
-                for (int ifc = 0; ifc < cfg->bNumInterfaces; ifc++) {
-                    const auto& alt = cfg->interface[ifc].altsetting[0];
-                    if (alt.bInterfaceClass != LIBUSB_CLASS_HID) continue;
-                    cout << (known ? "* " : "  ") << "VID 0x" << std::hex
-                         << std::setw(4) << std::setfill('0') << d.idVendor
-                         << " PID 0x" << std::setw(4) << std::setfill('0')
-                         << d.idProduct << std::dec << "  iface="
-                         << (int)alt.bInterfaceNumber << "  bus "
-                         << (int)libusb_get_bus_number(devs[i]) << " addr "
-                         << (int)libusb_get_device_address(devs[i])
-                         << (known ? "  <- would be probed by `probe`" : "")
-                         << "\n";
-                }
-                libusb_free_config_descriptor(cfg);
-            }
-            libusb_free_device_list(devs, 1);
-            libusb_exit(dryCtx);
-            return;
-        }
-
-        cout << "probe opens raw HID interfaces on your "
-                "Alienware/Darfon/etc. devices to test lights. Every "
-                "individual command scopes any USB interface claim (and any "
-                "kernel-driver detach it needs) to that single command, so "
-                "nothing stays claimed across the prompts below -- see "
-                "docs/hid-transport.md.\n"
-             << "If anything goes wrong, from another terminal or SSH "
-                "session:\n"
-             << "  sudo pkill alienfx_cli\n"
-             << "and if a keyboard stops responding, rebind its usbhid "
-                "driver, e.g.:\n"
-             << "  echo -n '<bus-port:iface>' | sudo tee "
-                "/sys/bus/usb/drivers/usbhid/bind\n"
-             << "Run `alienfx_cli probe --dry-run` first to see what would "
-                "be opened.\n\n";
-
         ensureInit();
 
         for (auto& d : afx_map.fxdevs) {
@@ -717,11 +534,9 @@ int main(int argc, char** argv) {
                  << " +++++\n";
         }
 
-        if (!probe_yes) {
-            cout << "Do you want to set devices and lights names? (y/N) ";
-            auto ans = ReadLineTrimmed();
-            if (ans.empty() || (ans[0] != 'y' && ans[0] != 'Y')) return;
-        }
+        cout << "Do you want to set devices and lights names? (y/N) ";
+        auto ans = ReadLineTrimmed();
+        if (ans.empty() || (ans[0] != 'y' && ans[0] != 'Y')) return;
 
         for (size_t di = 0; di < afx_map.fxdevs.size(); di++) {
             if (probe_dev != -1 && (int)di != probe_dev) continue;
@@ -986,10 +801,6 @@ int main(int argc, char** argv) {
 
     app.require_subcommand(1);
 
-    try {
-        CLI11_PARSE(app, argc, argv);
-    } catch (const InputInterrupted&) {
-        cerr << "\nInterrupted -- closing HID devices...\n";
-    }
+    CLI11_PARSE(app, argc, argv);
     return 0;
 }

@@ -15,14 +15,12 @@
 //     open handle (libusb/hid.c's DETACH_KERNEL_DRIVER, reattached only on
 //     hid_close()). On a Darfon RGB keyboard (VID 0x0d62) the AlienFX
 //     lighting collection lives on the *same* interface as the keyboard
-//     itself (see docs/probe-keyboard-lockup.md); that combination is what
-//     disabled the keyboard the first version of this backend hit.
+//     itself; that combination can disable the keyboard for as long as the
+//     process holds the handle open.
 //   - hidapi's hidraw backend avoids that (it never claims anything), but
 //     every output-report write then goes over hidraw's interrupt-OUT path
-//     (drivers/hid/hidraw.c) instead of a control transfer -- ~425x slower
-//     on hardware whose OUT endpoint has a long bInterval (measured:
-//     63.8ms vs. 150us on this repo's Alienware LED controller, see
-//     docs/evidence/data/).
+//     (drivers/hid/hidraw.c) instead of a control transfer -- measured
+//     ~425x slower on hardware whose OUT endpoint has a long bInterval.
 //
 // Every function here scopes any interface claim it needs to the single
 // transfer it's making -- see UsbHidHandle's negotiation below and
@@ -47,8 +45,7 @@ struct UsbHidHandle {
     // firmware answers a device-recipient request with a STALL that still
     // costs the full 2s control-transfer timeout, and retrying that on
     // every SetColor would reintroduce exactly the kind of stall this
-    // rewrite exists to avoid. See docs/hid-transport.md for the measured
-    // result on Darfon/Alienware hardware.
+    // rewrite exists to avoid.
     bool deviceRecipientTried = false;
     bool deviceRecipientWorks = false;
 };

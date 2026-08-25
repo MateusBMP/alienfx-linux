@@ -189,9 +189,6 @@ class Functions {
         };
         unsigned long devID;
     };
-    // Human-readable "bus-addr:iface" identifier, for logs only -- devices
-    // are identified by PID/VID everywhere else (mappings.json, zones).
-    string path;
     int version = API_UNKNOWN;  // interface version, will stay at API_UNKNOWN
                                 // if not initialized
     uint8_t bright = 64;        // Last brightness set for device

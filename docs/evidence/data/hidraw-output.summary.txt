@@ -1,1 +1,0 @@
-mode=output length=34 n=200 failures=0 min=24098us mean=63791.6us p50=63992us p99=64134us max=64134us

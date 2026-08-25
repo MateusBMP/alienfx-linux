@@ -1,3 +1,0 @@
-[150424.800665] input: HID 0d62:3740 Keyboard as /devices/pci0000:00/0000:00:14.0/usb3/3-8/3-8:1.1/0003:0D62:3740.0012/input/input48
-[150424.886773] input: HID 0d62:3740 Wireless Radio Control as /devices/pci0000:00/0000:00:14.0/usb3/3-8/3-8:1.1/0003:0D62:3740.0012/input/input49
-[150424.887023] hid-generic 0003:0D62:3740.0012: input,hiddev98,hidraw3: USB HID v1.11 Keyboard [HID 0d62:3740] on usb-0000:00:14.0-8/input1

@@ -20,8 +20,7 @@ constexpr uint16_t HID_RT_FEATURE = 3;
 // bounded to a single control/interrupt transfer instead of the life of the
 // device handle. This is the actual fix for the keyboard lockup this
 // backend used to cause: the interface is never claimed across anything a
-// human might be doing, e.g. `probe`'s interactive prompts -- see
-// docs/hid-transport.md.
+// human might be doing, e.g. `probe`'s interactive prompts.
 class ScopedClaim {
    public:
     ScopedClaim(libusb_device_handle* h, int iface) : handle_(h), iface_(iface) {
