@@ -4,6 +4,21 @@ Supporting material for the addendum in `../probe-keyboard-lockup.md`, gathered 
 to upstream feedback on that report. Machine used: `187c:0550` (Alienware AW-ELC LED
 controller, API_V4) and `0d62:3740` (Darfon keyboard, API_V5) as described there.
 
+> This bundle's own timing data (hidraw's ~425x slowdown vs. libusb control transfers, see
+> `data/*-output.summary.txt`) is what motivated `../hid-transport.md`'s scoped-claim libusb
+> rewrite, which supersedes the hidraw-backend switch this bundle otherwise documents. Two
+> more items added for that rewrite:
+>
+> - `scripts/recipient-probe.c` + `scripts/build-recipient-probe.sh` -- checks, directly
+>   against hardware, whether a HID class request can reach the Darfon's AlienFX Feature
+>   report (`0xCC`) without claiming its keyboard interface (device-recipient or
+>   unbound-interface-recipient, per `check_ctrlrecip()` in the kernel's usbfs). Result in
+>   `data/recipient-probe-darfon.log`: both claim-free routes STALL, so a scoped claim on the
+>   keyboard interface is unavoidable for this device -- see `../hid-transport.md`.
+> - `data/hid-transport-verification.log` -- the scoped-claim rewrite exercised against both
+>   devices (`status`, `setall`, `setone`), with `dmesg` confirming clean per-transfer
+>   detach/reattach cycles on the Darfon and no loss of keyboard responsiveness.
+
 ## What's here
 
 - `scripts/hidbench.c` + `scripts/build-hidbench.sh` -- a small hidapi microbenchmark for

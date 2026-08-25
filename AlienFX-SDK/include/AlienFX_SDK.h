@@ -3,8 +3,8 @@
 #include <string>
 #include <vector>
 
-#include "hidapi.h"
 #include "libusb.h"
+#include "libusb_helper.h"
 
 using namespace std;
 
@@ -139,8 +139,10 @@ enum Action {
 
 class Functions {
    private:
-    hid_device* devHandle = nullptr;  // USB device handle, NULL if not
-    void* ACPIdevice = nullptr;       // ACPI device object pointer
+    UsbHidHandle devHandle;      // libusb device/interface handle, see
+                                 // libusb_helper.h; devHandle.handle is
+                                 // NULL if not open
+    void* ACPIdevice = nullptr;  // ACPI device object pointer
 
     bool inSet = false;
 
@@ -187,9 +189,8 @@ class Functions {
         };
         unsigned long devID;
     };
-    // Device path. Owned copy: the hid_device_info this is built from is
-    // freed by hid_free_enumeration() right after enumeration, so a raw
-    // char* here would dangle for the rest of the process.
+    // Human-readable "bus-addr:iface" identifier, for logs only -- devices
+    // are identified by PID/VID everywhere else (mappings.json, zones).
     string path;
     int version = API_UNKNOWN;  // interface version, will stay at API_UNKNOWN
                                 // if not initialized
@@ -210,11 +211,13 @@ class Functions {
     // true if device found and initialized.
     bool AlienFXInitialize(unsigned short vidd = 0, unsigned short pidd = 0);
 
-    // Check device and initialize data
-    // vid/pid the same as above
-    // Returns true if device found and initialized.
-    bool AlienFXProbeDevice(libusb_context* ctxx, unsigned short vidd = 0,
-                            unsigned short pidd = 0, char* pathh = 0);
+    // Check device and initialize data for the given USB HID interface.
+    // ctxx is only used for the (unrelated) GetMaxPacketSize lookup below;
+    // vid/pid/path are read from usbDev itself. Returns true if this
+    // interface matches a known AlienFX API version and was opened
+    // successfully.
+    bool AlienFXProbeDevice(libusb_context* ctxx, libusb_device* usbDev,
+                            int interfaceNumber);
 
     // Prepare to set lights
     bool Reset();

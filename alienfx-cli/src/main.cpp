@@ -20,7 +20,7 @@
 #include "AlienFX_SDK.h"
 #include "AlienFan-SDK.h"
 #include "const.h"
-#include "hidapi.h"
+#include "libusb.h"
 
 using namespace std;
 
@@ -127,9 +127,12 @@ static vector<AlienFX_SDK::Afx_action> ParseActionList(
 // Thrown out of a blocking prompt (ReadLineTrimmed) when the process receives
 // SIGINT/SIGTERM. Left uncaught by CLI11_PARSE's own CLI::ParseError handler,
 // it propagates all the way out to main(), which catches it and returns
-// normally -- letting afx_map's destructor close every open HID handle
-// (hid_close reattaches any kernel driver a libusb-backed build detached)
-// instead of the process dying mid-prompt with devices still open.
+// normally -- letting afx_map's destructor close every open USB handle
+// cleanly via unwinding, instead of the process dying mid-prompt. Each HID
+// transfer already scopes its own interface claim (and any kernel-driver
+// detach that comes with it) to just that one call -- see
+// docs/hid-transport.md -- so no claim is ever outstanding while a prompt is
+// blocked; this is about clean shutdown, not about releasing a stuck claim.
 struct InputInterrupted {};
 
 static volatile std::sig_atomic_t g_interrupted = 0;
@@ -636,7 +639,9 @@ int main(int argc, char** argv) {
             // Microchip (monitors), Primax (mice), Chicony (external
             // keyboards). Mirrors AlienFX_SDK's own enumeration filter, kept
             // separately here so --dry-run needs no SDK internals and can
-            // run without opening a single device.
+            // run without opening a single device -- this uses only
+            // read-only libusb descriptor calls (device list + config
+            // descriptor), no libusb_open at all.
             auto isKnownVendor = [](unsigned short vid) {
                 switch (vid) {
                     case 0x187c:
@@ -649,49 +654,49 @@ int main(int argc, char** argv) {
                         return false;
                 }
             };
-            hid_init();
-            auto* devs = hid_enumerate(0, 0);
-            cout << "probe --dry-run: HID devices found (none of these are "
-                    "opened):\n";
-            for (auto* d = devs; d; d = d->next) {
-                bool known = isKnownVendor(d->vendor_id);
-                cout << (known ? "* " : "  ") << "VID 0x" << std::hex
-                     << std::setw(4) << std::setfill('0') << d->vendor_id
-                     << " PID 0x" << std::setw(4) << std::setfill('0')
-                     << d->product_id << std::dec << "  usage_page=0x"
-                     << std::hex << d->usage_page << " usage=0x" << d->usage
-                     << std::dec << "  iface=" << d->interface_number << "  "
-                     << (d->path ? d->path : "?")
-                     << (known ? "  <- would be probed by `probe`" : "")
-                     << "\n";
+            libusb_context* dryCtx = nullptr;
+            if (libusb_init(&dryCtx) < 0) {
+                cerr << "Failed to initialize libusb\n";
+                return;
             }
-            hid_free_enumeration(devs);
+            libusb_device** devs = nullptr;
+            ssize_t n = libusb_get_device_list(dryCtx, &devs);
+            cout << "probe --dry-run: USB devices found (none of these are "
+                    "opened):\n";
+            for (ssize_t i = 0; i < n; i++) {
+                libusb_device_descriptor d{};
+                if (libusb_get_device_descriptor(devs[i], &d) != 0) continue;
+                bool known = isKnownVendor(d.idVendor);
+                libusb_config_descriptor* cfg = nullptr;
+                if (libusb_get_config_descriptor(devs[i], 0, &cfg) != 0 ||
+                    !cfg)
+                    continue;
+                for (int ifc = 0; ifc < cfg->bNumInterfaces; ifc++) {
+                    const auto& alt = cfg->interface[ifc].altsetting[0];
+                    if (alt.bInterfaceClass != LIBUSB_CLASS_HID) continue;
+                    cout << (known ? "* " : "  ") << "VID 0x" << std::hex
+                         << std::setw(4) << std::setfill('0') << d.idVendor
+                         << " PID 0x" << std::setw(4) << std::setfill('0')
+                         << d.idProduct << std::dec << "  iface="
+                         << (int)alt.bInterfaceNumber << "  bus "
+                         << (int)libusb_get_bus_number(devs[i]) << " addr "
+                         << (int)libusb_get_device_address(devs[i])
+                         << (known ? "  <- would be probed by `probe`" : "")
+                         << "\n";
+                }
+                libusb_free_config_descriptor(cfg);
+            }
+            libusb_free_device_list(devs, 1);
+            libusb_exit(dryCtx);
             return;
         }
 
-#ifdef ALIENFX_HID_BACKEND_LIBUSB
-        // This build was configured with -DALIENFX_HID_BACKEND=libusb,
-        // which detaches the kernel driver from whatever HID interface it
-        // opens (see the comment on that option in AlienFX-SDK/CMakeLists.txt)
-        // and only reattaches it when the device is closed. `probe` opens
-        // every detected device and then blocks on an interactive prompt --
-        // on hardware where an AlienFX-family VID also owns a HID input
-        // interface, that combination can disable the very keyboard needed
-        // to answer the prompt, with no way to recover except from another
-        // machine. Refuse to run interactively; --dry-run still works.
-        if (!probe_yes) {
-            cerr << "probe is disabled on a libusb-backend build: it can "
-                    "detach and disable a keyboard, then block on a prompt "
-                    "with no way to answer it. Rebuild with the default "
-                    "-DALIENFX_HID_BACKEND=hidraw, or re-run with --yes if "
-                    "you understand the risk and have a way to recover "
-                    "(see `probe --dry-run` and this build's CLAUDE.md).\n";
-            return;
-        }
-#endif
-
-        cout << "probe opens raw HID nodes on your Alienware/Darfon/etc. "
-                "devices to test lights.\n"
+        cout << "probe opens raw HID interfaces on your "
+                "Alienware/Darfon/etc. devices to test lights. Every "
+                "individual command scopes any USB interface claim (and any "
+                "kernel-driver detach it needs) to that single command, so "
+                "nothing stays claimed across the prompts below -- see "
+                "docs/hid-transport.md.\n"
              << "If anything goes wrong, from another terminal or SSH "
                 "session:\n"
              << "  sudo pkill alienfx_cli\n"

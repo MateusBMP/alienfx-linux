@@ -1,0 +1,13 @@
+$ sudo ./docs/evidence/scripts/recipient-probe
+device 0d62:3740  bus 3 addr 6  interfaces:
+  iface 0  class 0xff  0 endpoint(s)  kernel driver: none
+  iface 1  class 0x03  1 endpoint(s)  kernel driver: BOUND
+
+GET_REPORT  type=3 id=0xcc length=8
+  A   class/device, wIndex=0, no claim           FAIL  STALL (firmware refused)
+  B   class/interface, wIndex=0 (unbound)        FAIL  STALL (firmware refused)
+  C   class/interface at the HID interface       SKIP  needs --allow-detach (iface 1 is bound to usbhid; detaching it disables that input device)
+
+reading: A or B answering means lighting can be driven with the
+keyboard left bound to usbhid. Only C answering means the claim is
+unavoidable and has to be held for as short a window as possible.

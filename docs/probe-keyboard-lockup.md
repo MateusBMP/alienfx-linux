@@ -1,5 +1,16 @@
 # `alienfx_cli probe` can disable a keyboard and then deadlock waiting for it
 
+> **Superseded.** The hidraw-backend switch this report proposed (§Proposed
+> fix below) was the fix at the time, but it traded away the performance
+> upstream had for a good reason (see §Addendum). The SDK has since moved
+> back to libusb, keeping the safety property this report cares about by a
+> different means: every HID transfer claims -- and, where a kernel driver
+> owns the interface, detaches -- only for the duration of that one
+> transfer, never across an interactive prompt. See
+> [`docs/hid-transport.md`](hid-transport.md) for the current design and the
+> hardware evidence for it; the root-cause analysis below (§Root cause,
+> §Why the Windows original doesn't hit this) still applies unchanged.
+
 ## Summary
 
 On hardware where an AlienFX-family vendor ID also owns the machine's actual

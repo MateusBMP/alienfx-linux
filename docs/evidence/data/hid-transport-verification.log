@@ -1,0 +1,61 @@
+Verification run for docs/hid-transport.md, against this repo's test hardware:
+  0d62:3740 (Darfon, API_V5) and 187c:0550 (Alienware AW-ELC, API_V4).
+Build: Debug (INFO logging), scoped-claim libusb transport (this rewrite).
+
+Full loguru output and dmesg are reproduced in docs/hid-transport.md's
+"Verified on hardware" section; this file keeps the two commands' key lines
+and the dmesg detach/reattach evidence together for reference.
+
+=== `status` -- version/length detection ===
+AlienFX_SDK.cpp:333  Probing device VID: 0x0d62, PID: 0x3740, Version: 5, Length: 8, Description:
+AlienFX_SDK.cpp:333  Probing device VID: 0x187c, PID: 0x0550, Version: 4, Length: 34, Description: Alienware AW-ELC
+
+  Darfon: Version 5, Length 8 -- the usage-guarded detection path
+  (usage_page 0xFF89/usage 0xCC) and the descriptor-derived Feature report
+  length, replacing the old unconditional API_V5 + wMaxPacketSize=32.
+  Alienware: Version 4, Length 34 -- unchanged from before this rewrite
+  (still detected via GetMaxPacketSize, untouched code path).
+
+=== `setall 255 0 0` -- first run, before mappings.json existed ===
+  Darfon devices with 0 lights (no mappings.json -- SetMultiColor's empty
+  light list is a no-op on the V5 path): only Reset/Status/TurnOnSet sent,
+  no colorSet packet.
+  Alienware: SetMultiColor's empty-list fallback still sent real V4 color
+  packets (00 03 21 00 04 ff ff ..., x3) -- pre-existing behavior, unchanged
+  by this rewrite.
+  Total wall time: 3.313s, of which ~2s is API_V4's pre-existing
+  WaitForReady() polling loop in Reset() (unrelated to transport).
+
+=== `setone 0 0 255 0 0` -- explicit light index, second run ===
+AlienFX_SDK.cpp:137  Sending hid packet (8 uint8_ts): cc 94 00 00 00 00 00 00   (Reset)
+AlienFX_SDK.cpp:137  Sending hid packet (8 uint8_ts): cc 93 00 00 00 00 00 00   (Status)
+AlienFX_SDK.cpp:137  Sending hid packet (8 uint8_ts): cc 83 38 9c ff 00 00 00   (TurnOnSet)
+AlienFX_SDK.cpp:137  Sending hid packet (8 uint8_ts): cc 8c 02 00 01 ff 00 00   (colorSet -- the actual light command)
+AlienFX_SDK.cpp:137  Sending hid packet (8 uint8_ts): cc 8c 13 00 00 00 00 00   (loop)
+AlienFX_SDK.cpp:137  Sending hid packet (8 uint8_ts): cc 8b 01 ff 00 00 00 00   (update)
+
+  Length is correctly 8 throughout (not 32); no STALL, no dropped write
+  (HidD_SetFeature/HidD_SetOutputReport all returned success). The keyboard
+  kept responding for the whole run. The physical LED did not visibly
+  change color -- see docs/hid-transport.md's "Known follow-up" section;
+  this is a protocol-level question above the transport layer
+  (AddV5DataBlock/SetAction's V5 mask/index encoding, unmodified by this
+  rewrite) and was already flagged as unconfirmed in
+  ../probe-keyboard-lockup.md before this work.
+
+=== dmesg, spanning the `setall` run above ===
+Three clean detach -> reattach cycles on the Darfon keyboard interface, one
+per PrepareAndSend call to it (cc 94, cc 93, cc 83), each completing --
+usbhid re-registering a fresh input device -- before the next transfer
+began:
+
+[18793.478758] input: HID 0d62:3740 Keyboard as .../0003:0D62:3740.0008/input/input39
+[18793.478955] hid-generic 0003:0D62:3740.0008: input,hiddev99,hidraw4: USB HID v1.11 Keyboard [HID 0d62:3740] on usb-0000:00:14.0-8/input1
+[18793.687207] hid-generic 0003:0D62:3740.0009: input,hiddev99,hidraw4: USB HID v1.11 Keyboard [HID 0d62:3740] on usb-0000:00:14.0-8/input1
+[18793.896194] hid-generic 0003:0D62:3740.000A: input,hiddev99,hidraw4: USB HID v1.11 Keyboard [HID 0d62:3740] on usb-0000:00:14.0-8/input1
+  (repeats similarly for every later `Sending hid packet` line to the
+  Darfon across the rest of the run -- each ScopedClaim release triggers a
+  fresh input-device registration, confirming reattach completed cleanly
+  every single time, with no overlap and no stuck detach.)
+
+No overlapping or missing reattach events were observed across the run.

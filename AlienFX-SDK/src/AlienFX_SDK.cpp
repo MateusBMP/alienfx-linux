@@ -8,10 +8,9 @@
 #include <fstream>
 #include <iterator>
 #include <loguru.hpp>
-#include <set>
 
 #include "alienfx_control.h"
-#include "hidapi.h"
+#include "hid_report_descriptor.h"
 #include "libusb.h"
 #include "libusb_helper.h"
 #include "nlohmann/json.hpp"
@@ -138,7 +137,7 @@ bool Functions::PrepareAndSend(const uint8_t* command,
     LOG_S(INFO) << oss.str();
 
 #endif
-    if (!devHandle) {
+    if (!devHandle.handle) {
         LOG_S(ERROR) << "HID device not open";
         return false;
     }
@@ -205,17 +204,46 @@ void Functions::SavePowerBlock(uint8_t blID, Afx_lightblock* act, bool needSave,
     // return true;
 }
 
-bool Functions::AlienFXProbeDevice(libusb_context* ctxx, unsigned short vidd,
-                                   unsigned short pidd, char* pathh) {
+bool Functions::AlienFXProbeDevice(libusb_context* ctxx, libusb_device* usbDev,
+                                   int interfaceNumber) {
     version = API_UNKNOWN;
+
+    libusb_device_descriptor desc{};
+    if (libusb_get_device_descriptor(usbDev, &desc) != 0) return false;
+    unsigned short vidd = desc.idVendor, pidd = desc.idProduct;
+
     length = GetMaxPacketSize(ctxx, vidd, pidd);
     // NOTE: all lengths are +1 in windows than linux
     // Reason: ask hid devs?
     int checker = length + 1;
     switch (vidd) {
-        case 0x0d62:  // Darfon
-            version = API_V5;
-            break;
+        case 0x0d62: {  // Darfon
+            // Upstream selects this device by usage (HIDP_CAPS.Usage ==
+            // 0xcc, see AlienFX_SDK.cpp:198-203 in the Windows source) --
+            // not by VID alone, because on these keyboards the AlienFX
+            // lighting collection shares one HID interface with the
+            // keyboard collection itself (see docs/hid-transport.md and
+            // docs/probe-keyboard-lockup.md). Windows gets separate device
+            // nodes per collection to check that on; Linux has only the
+            // interface's report descriptor, which is parsed here to find
+            // the same 0xFF89/0xCC collection and read its real Feature
+            // report length (`length` above is the interrupt-IN endpoint's
+            // wMaxPacketSize, which is unrelated to the Feature report this
+            // device actually uses and was wrong here -- 32 instead of the
+            // descriptor's 8).
+            std::vector<uint8_t> rdesc;
+            if (ReadReportDescriptor(usbDev, interfaceNumber, &rdesc)) {
+                for (auto& c : ParseTopLevelCollections(rdesc.data(),
+                                                        rdesc.size())) {
+                    if (c.usage_page == 0xff89 && c.usage == 0xcc &&
+                        c.feature_bytes > 0) {
+                        version = API_V5;
+                        length = c.feature_bytes;
+                        break;
+                    }
+                }
+            }
+        } break;
         case 0x187c:  // Alienware
             switch (checker) {
                 // NOTE: Adjusted offset from 9 -> 11 for linux
@@ -254,41 +282,52 @@ bool Functions::AlienFXProbeDevice(libusb_context* ctxx, unsigned short vidd,
         return false;
     }
     // NOTE: Add +1 for device which dont have reportid as its nulled out.
-    // The report-ID-0 byte is stripped by the transport before it reaches the
-    // wire -- hidapi's libusb backend does this in userspace, the kernel's
-    // usbhid driver does it for the hidraw backend -- so either way `length`
-    // must include the ID byte here to end up with the right wire length.
+    // The report-ID-0 byte is stripped by the transport before it reaches
+    // the wire -- see ControlTransferReport in libusb_helper.cpp -- so
+    // `length` must include the ID byte here to end up with the right wire
+    // length.
     if (reportIDList[version] == 0) {
         length++;
     }
     vid = vidd;
     pid = pidd;
-    path = pathh ? pathh : "";
-    // NOTE: Open path should not hang kbd while testing it? else fallback
-    if (pathh)
-        devHandle = hid_open_path(pathh);
-    else
-        devHandle = hid_open(vid, pid, nullptr);
 
-    if (!devHandle) {
-        LOG_S(ERROR) << "Failed to open HID device VID:0x" << std::hex << vid
-                     << " PID:0x" << pid << std::dec;
+    devHandle = UsbHidHandle{};
+    devHandle.interface = interfaceNumber;
+    PopulateEndpoints(usbDev, &devHandle);
+
+    // A plain, non-exclusive open() of the device node: this claims no
+    // interface and detaches no kernel driver (that only happens, scoped to
+    // a single transfer, inside libusb_helper.cpp's ScopedClaim). Safe to
+    // do even for a device whose HID interface is also a keyboard.
+    int openResult = libusb_open(usbDev, &devHandle.handle);
+    if (openResult != 0 || !devHandle.handle) {
+        LOG_S(ERROR) << "Failed to open USB device VID:0x" << std::hex << vid
+                     << " PID:0x" << pid << std::dec << ": "
+                     << libusb_error_name(openResult);
         return false;
     }
-    wchar_t wbuf[256];
-    if (hid_get_manufacturer_string(devHandle, wbuf,
-                                    sizeof(wbuf) / sizeof(wchar_t)) >= 0) {
-        for (int i = 0; wbuf[i] != 0; i++) {
-            description += static_cast<char>(wbuf[i]);
-        }
-    }
 
+    path = std::to_string(libusb_get_bus_number(usbDev)) + "-" +
+          std::to_string(libusb_get_device_address(usbDev)) + ":" +
+          std::to_string(interfaceNumber);
+
+    // Manufacturer/product strings are a plain GET_DESCRIPTOR(STRING) at
+    // DEVICE recipient -- always allowed with no claim needed (see
+    // check_ctrlrecip() in the kernel's usbfs, which only gates
+    // INTERFACE/ENDPOINT recipients), so this never risks the interface
+    // either.
+    unsigned char strbuf[256];
+    if (desc.iManufacturer &&
+        libusb_get_string_descriptor_ascii(devHandle.handle, desc.iManufacturer,
+                                           strbuf, sizeof(strbuf)) >= 0) {
+        description += reinterpret_cast<char*>(strbuf);
+    }
     description.append(" ");
-    if (hid_get_product_string(devHandle, wbuf,
-                               sizeof(wbuf) / sizeof(wchar_t)) >= 0) {
-        for (int i = 0; wbuf[i] != 0; i++) {
-            description += static_cast<char>(wbuf[i]);
-        }
+    if (desc.iProduct &&
+        libusb_get_string_descriptor_ascii(devHandle.handle, desc.iProduct,
+                                           strbuf, sizeof(strbuf)) >= 0) {
+        description += reinterpret_cast<char*>(strbuf);
     }
 #ifdef DEBUG
     LOG_S(INFO) << "Probing device VID: 0x" << std::hex << std::setw(4)
@@ -926,7 +965,7 @@ bool Functions::SetGlobalEffects(std::uint8_t effType, std::uint8_t mode,
 std::uint8_t Functions::GetDeviceStatus() {
     std::uint8_t buffer[MAX_BUFFERSIZE];
     // unsigned long written;
-    if (devHandle) switch (version) {
+    if (devHandle.handle) switch (version) {
             // case API_V9:
             //	HidD_GetInputReport(devHandle, buffer, length);
             //	return 1;
@@ -1031,8 +1070,12 @@ std::uint8_t Functions::IsDeviceReady() {
 }
 
 Functions::~Functions() {
-    if (devHandle) {
-        hid_close(devHandle);
+    if (devHandle.handle) {
+        // Every helper in libusb_helper.cpp releases any interface claim it
+        // takes before returning, so nothing should still be claimed here --
+        // this is a plain close, not a place a kernel driver detach could
+        // leak past.
+        libusb_close(devHandle.handle);
 #ifdef DEBUG
         LOG_S(INFO) << "Functions destructor: Close device handle for VID 0x"
                     << std::hex << vid << " PID: 0x" << pid;
@@ -1110,41 +1153,53 @@ bool Mappings::AlienFXEnumDevices(void* acc) {
     for (auto& d : fxdevs) d.present = false;
     activeDevices = activeLights = 0;
 
-    // Enumerate all HID devices
-    struct hid_device_info* devs = hid_enumerate(0x0, 0x0);
-
-    // hid_enumerate() yields one entry per top-level collection, and a
-    // composite device's collections all share one path -- e.g. under the
-    // hidraw backend the Darfon keyboard's single /dev/hidrawN node shows up
-    // as four separate entries. Probe each unique path once: besides being
-    // wasteful, opening the same device repeatedly is exactly the pattern
-    // that let this code open a keyboard's own input interface before
-    // AlienFxUpdateDevice's dedupe-by-VID/PID even got a chance to close the
-    // extra handle. The vendor filter is the primary safety net: it stops
-    // this process from ever opening an unrelated HID device at all.
-    std::set<string> seenPaths;
-
-    for (struct hid_device_info* cur_dev = devs; cur_dev;
-        cur_dev = cur_dev->next) {
-        if (!cur_dev->path || !IsKnownVendor(cur_dev->vendor_id)) continue;
-        if (!seenPaths.insert(cur_dev->path).second) continue;
-
-        dev = new Functions();
-        if (dev->AlienFXProbeDevice(ctx, cur_dev->vendor_id,
-                                    cur_dev->product_id, cur_dev->path)) {
-#ifdef DEBUG
-            LOG_S(INFO) << "Found AlienFX device - VID: 0x" << std::hex
-                        << cur_dev->vendor_id << ", PID: 0x"
-                        << cur_dev->product_id;
-#endif
-            AlienFxUpdateDevice(dev);
-        } else {
-            delete dev;
-            dev = nullptr;
-        }
+    // Enumerate every USB device and probe each of its HID interfaces
+    // directly -- unlike hidapi's hid_enumerate(), this yields one entry per
+    // actual USB interface, not one per top-level HID collection, so there
+    // is nothing to dedupe here the way the previous hidapi-based version
+    // needed to (a composite device's several collections, e.g. a Darfon
+    // keyboard's four, all live on the one interface probed below). The
+    // vendor filter is still the primary safety net: it stops this process
+    // from ever opening an unrelated USB device at all.
+    libusb_device** devs = nullptr;
+    ssize_t devCount = libusb_get_device_list(ctx, &devs);
+    if (devCount < 0) {
+        LOG_S(ERROR) << "Failed to get USB device list: "
+                     << libusb_error_name((int)devCount);
+        return false;
     }
 
-    hid_free_enumeration(devs);
+    for (ssize_t di = 0; di < devCount; di++) {
+        libusb_device_descriptor desc{};
+        if (libusb_get_device_descriptor(devs[di], &desc) != 0) continue;
+        if (!IsKnownVendor(desc.idVendor)) continue;
+
+        libusb_config_descriptor* cfg = nullptr;
+        if (libusb_get_config_descriptor(devs[di], 0, &cfg) != 0 || !cfg)
+            continue;
+
+        for (int ifc = 0; ifc < cfg->bNumInterfaces; ifc++) {
+            const libusb_interface_descriptor& alt =
+                cfg->interface[ifc].altsetting[0];
+            if (alt.bInterfaceClass != LIBUSB_CLASS_HID) continue;
+
+            dev = new Functions();
+            if (dev->AlienFXProbeDevice(ctx, devs[di],
+                                        alt.bInterfaceNumber)) {
+#ifdef DEBUG
+                LOG_S(INFO) << "Found AlienFX device - VID: 0x" << std::hex
+                            << desc.idVendor << ", PID: 0x" << desc.idProduct;
+#endif
+                AlienFxUpdateDevice(dev);
+            } else {
+                delete dev;
+                dev = nullptr;
+            }
+        }
+        libusb_free_config_descriptor(cfg);
+    }
+
+    libusb_free_device_list(devs, 1);
 
     // Check removed devices
     for (auto& d : fxdevs) {
